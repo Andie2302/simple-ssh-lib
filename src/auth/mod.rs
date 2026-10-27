@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::error::{Error, Result};
 use crate::keys::PrivateKey;
 use crate::transport::Transport;
-use crate::wire::{Reader, Writer};
+use crate::wire::{Reader, Writer, check_field};
 
 const MSG_USERAUTH_REQUEST: u8 = 50;
 const MSG_USERAUTH_FAILURE: u8 = 51;
@@ -26,6 +26,7 @@ pub async fn authenticate<S>(t: &mut Transport<S>, user: &str, key: &PrivateKey)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    check_field(user, "user name")?;
     t.request_service("ssh-userauth").await?;
 
     let blob = key.public_blob();

@@ -110,6 +110,7 @@ impl OpenOptions {
     }
 
     pub async fn open(&self, sftp: &Sftp, path: &str) -> Result<File> {
+        crate::wire::check_field(path, "path")?;
         let flags = self.pflags()?;
         let attrs = Metadata {
             permissions: self.mode,

@@ -22,6 +22,7 @@ use crate::transport::{HostKeyCheck, Transport};
 pub use channel::ExitStatus;
 pub(crate) use channel::open_session;
 pub use exec::ExecOutput;
+pub(crate) use mux::fuzz_dispatch;
 pub use shell::{Pty, Shell};
 
 /// Standardgrenze für die gesammelte Ausgabe eines Befehls (stdout + stderr).

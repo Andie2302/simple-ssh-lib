@@ -5,4 +5,4 @@ mod reader;
 mod writer;
 
 pub use reader::Reader;
-pub use writer::Writer;
+pub use writer::{MAX_FIELD_LEN, Writer, check_field};

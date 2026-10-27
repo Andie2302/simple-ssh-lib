@@ -10,6 +10,7 @@ use super::Session;
 use super::channel::{Channel, ExitStatus, open_session};
 use super::mux::Event;
 use crate::error::{Error, Result};
+use crate::wire::check_field;
 
 /// Terminal-Eigenschaften für `pty-req`.
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ pub struct Shell {
 impl Session {
     /// Öffnet eine Shell mit Pseudo-Terminal.
     pub async fn shell(&self, pty: Pty) -> Result<Shell> {
+        check_field(&pty.term, "terminal name")?;
         let channel = open_session(&self.handle).await?;
         let core = channel.core().clone();
         let accepted = core

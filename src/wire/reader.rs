@@ -37,12 +37,19 @@ impl<'a> Reader<'a> {
         }
     }
 
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let bytes = self.take(N)?;
+        let mut array = [0u8; N];
+        array.copy_from_slice(bytes); // gleiche Länge: `take(N)` liefert genau N Bytes
+        Ok(array)
+    }
+
     pub fn get_u32(&mut self) -> Result<u32> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().unwrap()))
+        Ok(u32::from_be_bytes(self.take_array()?))
     }
 
     pub fn get_u64(&mut self) -> Result<u64> {
-        Ok(u64::from_be_bytes(self.take(8)?.try_into().unwrap()))
+        Ok(u64::from_be_bytes(self.take_array()?))
     }
 
     pub fn get_raw(&mut self, n: usize) -> Result<&'a [u8]> {

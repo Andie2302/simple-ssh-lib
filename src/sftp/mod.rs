@@ -14,12 +14,17 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::connection::{Session, open_session};
 use crate::error::{Error, Result};
-use crate::wire::Writer;
+use crate::wire::{Writer, check_field};
 use client::Client;
 use proto::*;
 
 pub use file::{File, OpenOptions};
 pub use proto::{DirEntry, Metadata, SftpStatus};
+
+/// Nur für Robustheitstests (siehe `fuzz_api`).
+pub(crate) fn parse_response_for_fuzzing(packet: &[u8]) -> bool {
+    proto::parse_response(packet).is_ok()
+}
 
 /// Schutz vor Servern, die endlos Verzeichniseinträge liefern.
 const MAX_DIR_ENTRIES: usize = 1_000_000;
@@ -138,6 +143,7 @@ impl Sftp {
     /// Liest eine ganze Datei. Mehr als die konfigurierte Obergrenze ergibt
     /// [`Error::OutputTooLarge`].
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
+        check_field(path, "path")?;
         let file = self.open(path).await?;
         let size = file.metadata().await.ok().and_then(|m| m.size);
         let data = file.read_range(0, self.max_read, size).await;
@@ -148,6 +154,7 @@ impl Sftp {
 
     /// Schreibt `data` in eine neue oder vorhandene Datei (vorhandener Inhalt wird ersetzt).
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        check_field(path, "path")?;
         let file = self.create(path).await?;
         let written = file.write_all_at(0, data).await;
         let closed = file.close().await;
@@ -156,6 +163,7 @@ impl Sftp {
 
     /// Listet ein Verzeichnis ohne `.` und `..`, in der Reihenfolge des Servers.
     pub async fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>> {
+        check_field(path, "path")?;
         let handle = expect_handle(
             self.client
                 .call(FXP_OPENDIR, |w| {
@@ -211,6 +219,7 @@ impl Sftp {
 
     /// Attribute einer Datei; folgt Symlinks.
     pub async fn metadata(&self, path: &str) -> Result<Metadata> {
+        check_field(path, "path")?;
         expect_attrs(
             self.client
                 .call(FXP_STAT, |w| {
@@ -222,6 +231,7 @@ impl Sftp {
 
     /// Attribute einer Datei; folgt Symlinks nicht.
     pub async fn symlink_metadata(&self, path: &str) -> Result<Metadata> {
+        check_field(path, "path")?;
         expect_attrs(
             self.client
                 .call(FXP_LSTAT, |w| {
@@ -233,6 +243,7 @@ impl Sftp {
 
     /// Legt ein Verzeichnis an (`mode`: Unix-Modus, sonst Standard des Servers).
     pub async fn create_dir(&self, path: &str, mode: Option<u32>) -> Result<()> {
+        check_field(path, "path")?;
         let attrs = Metadata {
             permissions: mode,
             ..Metadata::default()
@@ -248,6 +259,7 @@ impl Sftp {
     }
 
     pub async fn remove_dir(&self, path: &str) -> Result<()> {
+        check_field(path, "path")?;
         expect_ok(
             self.client
                 .call(FXP_RMDIR, |w| {
@@ -258,6 +270,7 @@ impl Sftp {
     }
 
     pub async fn remove_file(&self, path: &str) -> Result<()> {
+        check_field(path, "path")?;
         expect_ok(
             self.client
                 .call(FXP_REMOVE, |w| {
@@ -269,6 +282,8 @@ impl Sftp {
 
     /// Benennt um. OpenSSH überschreibt ein vorhandenes Ziel nicht (Fehler `Failure`).
     pub async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        check_field(from, "path")?;
+        check_field(to, "path")?;
         expect_ok(
             self.client
                 .call(FXP_RENAME, |w| {
@@ -281,6 +296,7 @@ impl Sftp {
 
     /// Setzt den Unix-Modus einer Datei.
     pub async fn set_permissions(&self, path: &str, mode: u32) -> Result<()> {
+        check_field(path, "path")?;
         let attrs = Metadata {
             permissions: Some(mode),
             ..Metadata::default()
@@ -297,6 +313,7 @@ impl Sftp {
 
     /// Absoluter, aufgelöster Pfad (`realpath`).
     pub async fn canonicalize(&self, path: &str) -> Result<String> {
+        check_field(path, "path")?;
         match self
             .client
             .call(FXP_REALPATH, |w| {

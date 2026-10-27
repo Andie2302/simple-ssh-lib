@@ -653,3 +653,305 @@ async fn keepalive_task(conn: Weak<Conn>, reader: AbortHandle, keepalive: Keepal
         }
     }
 }
+
+/// Einstiegspunkt für Robustheitstests: legt Kanal 0 an und verarbeitet `msg`.
+#[doc(hidden)]
+pub(crate) fn fuzz_dispatch(msg: &[u8]) {
+    if msg.is_empty() {
+        return;
+    }
+    let (conn, _out) = test_support::conn_with_channel();
+    let _ = conn.dispatch(msg);
+}
+
+pub(crate) mod test_support {
+    use super::*;
+
+    /// Verbindung mit einem geöffneten Kanal 0 (entfernte Nummer 7) und dem
+    /// Empfänger der Sendewarteschlange.
+    pub fn conn_with_channel() -> (Arc<Conn>, mpsc::UnboundedReceiver<Out>) {
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        let conn = Arc::new(Conn::new(out_tx));
+        let (events, events_rx) = mpsc::unbounded_channel();
+        std::mem::forget(events_rx); // Ereignisse werden hier nicht gelesen
+        conn.lock().channels.insert(
+            0,
+            Chan {
+                remote: 7,
+                send_window: 100,
+                max_packet: 1000,
+                recv_window: 50,
+                events,
+                opening: None,
+                replies: VecDeque::new(),
+                write_waker: None,
+                close_sent: false,
+                eof_sent: false,
+                exit: Arc::new(Mutex::new(ExitStatus::Unknown)),
+            },
+        );
+        (conn, out_rx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::conn_with_channel;
+    use super::*;
+
+    fn msg(kind: u8, fill: impl FnOnce(&mut Writer)) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.put_u8(kind);
+        fill(&mut w);
+        w.into_vec()
+    }
+
+    /// Alles, was bisher zum Senden eingereiht wurde.
+    fn queued(rx: &mut mpsc::UnboundedReceiver<Out>) -> Vec<Vec<u8>> {
+        let mut sent = Vec::new();
+        while let Ok(item) = rx.try_recv() {
+            if let Out::Packet(p) = item {
+                sent.push(p);
+            }
+        }
+        sent
+    }
+
+    fn is_violation(r: Result<()>) -> bool {
+        matches!(r, Err(Error::ProtocolViolation(_)))
+    }
+
+    #[test]
+    fn data_may_fill_the_window_but_never_exceed_it() {
+        let (conn, _out) = conn_with_channel(); // Fenster: 50
+        let data = |n: usize| {
+            msg(MSG_CHANNEL_DATA, |w| {
+                w.put_u32(0).put_string(&vec![1u8; n]);
+            })
+        };
+        assert!(conn.dispatch(&data(50)).is_ok());
+        assert!(is_violation(conn.dispatch(&data(1))));
+    }
+
+    #[test]
+    fn oversized_data_packet_is_rejected_even_with_window_left() {
+        let (conn, _out) = conn_with_channel();
+        conn.lock().channels.get_mut(&0).unwrap().recv_window = u32::MAX;
+        let big = msg(MSG_CHANNEL_DATA, |w| {
+            w.put_u32(0).put_string(&vec![0u8; MAX_PACKET as usize + 1]);
+        });
+        assert!(is_violation(conn.dispatch(&big)));
+    }
+
+    #[test]
+    fn send_window_overflow_is_rejected() {
+        let (conn, _out) = conn_with_channel();
+        conn.lock().channels.get_mut(&0).unwrap().send_window = u32::MAX - 5;
+        let adjust = |n: u32| {
+            msg(MSG_CHANNEL_WINDOW_ADJUST, |w| {
+                w.put_u32(0).put_u32(n);
+            })
+        };
+        assert!(conn.dispatch(&adjust(5)).is_ok());
+        assert_eq!(conn.lock().channels[&0].send_window, u32::MAX);
+        assert!(is_violation(conn.dispatch(&adjust(1))));
+    }
+
+    #[test]
+    fn messages_for_unknown_channels_are_violations_except_close() {
+        let (conn, mut out) = conn_with_channel();
+        let for_unknown_channel = [
+            msg(MSG_CHANNEL_DATA, |w| {
+                w.put_u32(99).put_string(b"x");
+            }),
+            msg(MSG_CHANNEL_EXTENDED_DATA, |w| {
+                w.put_u32(99).put_u32(1).put_string(b"x");
+            }),
+            msg(MSG_CHANNEL_EOF, |w| {
+                w.put_u32(99);
+            }),
+            msg(MSG_CHANNEL_WINDOW_ADJUST, |w| {
+                w.put_u32(99).put_u32(5);
+            }),
+            msg(MSG_CHANNEL_SUCCESS, |w| {
+                w.put_u32(99);
+            }),
+            msg(MSG_CHANNEL_FAILURE, |w| {
+                w.put_u32(99);
+            }),
+        ];
+        for m in &for_unknown_channel {
+            assert!(is_violation(conn.dispatch(m)), "type {}", m[0]);
+        }
+        let request = msg(MSG_CHANNEL_REQUEST, |w| {
+            w.put_u32(99).put_string(b"x").put_bool(false);
+        });
+        assert!(is_violation(conn.dispatch(&request)));
+        // CLOSE für einen unbekannten Kanal ist die Antwort auf ein abgebrochenes Öffnen.
+        let close = msg(MSG_CHANNEL_CLOSE, |w| {
+            w.put_u32(99);
+        });
+        assert!(conn.dispatch(&close).is_ok());
+        assert!(queued(&mut out).is_empty());
+    }
+
+    #[test]
+    fn confirmation_for_a_cancelled_open_closes_the_remote_channel() {
+        let (conn, mut out) = conn_with_channel();
+        let confirm = msg(MSG_CHANNEL_OPEN_CONFIRMATION, |w| {
+            w.put_u32(55).put_u32(9).put_u32(1000).put_u32(1000);
+        });
+        assert!(conn.dispatch(&confirm).is_ok());
+        let sent = queued(&mut out);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0],
+            msg(MSG_CHANNEL_CLOSE, |w| {
+                w.put_u32(9);
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_confirmation_and_unsolicited_replies_are_violations() {
+        let (conn, _out) = conn_with_channel(); // Kanal 0 ist schon offen
+        let confirm = msg(MSG_CHANNEL_OPEN_CONFIRMATION, |w| {
+            w.put_u32(0).put_u32(9).put_u32(1000).put_u32(1000);
+        });
+        assert!(is_violation(conn.dispatch(&confirm)));
+        let success = msg(MSG_CHANNEL_SUCCESS, |w| {
+            w.put_u32(0);
+        });
+        assert!(is_violation(conn.dispatch(&success)));
+    }
+
+    #[test]
+    fn request_replies_arrive_in_order() {
+        let (conn, _out) = conn_with_channel();
+        let (a_tx, mut a_rx) = oneshot::channel();
+        let (b_tx, mut b_rx) = oneshot::channel();
+        {
+            let mut st = conn.lock();
+            let chan = st.channels.get_mut(&0).unwrap();
+            chan.replies.push_back(a_tx);
+            chan.replies.push_back(b_tx);
+        }
+        let reply = |kind| {
+            msg(kind, |w| {
+                w.put_u32(0);
+            })
+        };
+        conn.dispatch(&reply(MSG_CHANNEL_SUCCESS)).unwrap();
+        conn.dispatch(&reply(MSG_CHANNEL_FAILURE)).unwrap();
+        assert_eq!(a_rx.try_recv().ok(), Some(true));
+        assert_eq!(b_rx.try_recv().ok(), Some(false));
+    }
+
+    #[test]
+    fn global_requests_are_answered_only_when_a_reply_is_wanted() {
+        let (conn, mut out) = conn_with_channel();
+        let global = |want| {
+            msg(MSG_GLOBAL_REQUEST, |w| {
+                w.put_string(b"hostkeys-00@openssh.com").put_bool(want);
+            })
+        };
+        conn.dispatch(&global(false)).unwrap();
+        assert!(queued(&mut out).is_empty());
+        conn.dispatch(&global(true)).unwrap();
+        assert_eq!(queued(&mut out), vec![vec![MSG_REQUEST_FAILURE]]);
+    }
+
+    #[test]
+    fn channels_opened_by_the_server_are_refused() {
+        let (conn, mut out) = conn_with_channel();
+        let open = msg(MSG_CHANNEL_OPEN, |w| {
+            w.put_string(b"forwarded-tcpip")
+                .put_u32(41)
+                .put_u32(1000)
+                .put_u32(1000);
+        });
+        conn.dispatch(&open).unwrap();
+        let sent = queued(&mut out);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0][0], MSG_CHANNEL_OPEN_FAILURE);
+        assert_eq!(&sent[0][1..5], &41u32.to_be_bytes());
+    }
+
+    #[test]
+    fn exit_status_is_recorded_and_unknown_requests_are_refused() {
+        let (conn, mut out) = conn_with_channel();
+        let exit = msg(MSG_CHANNEL_REQUEST, |w| {
+            w.put_u32(0)
+                .put_string(b"exit-status")
+                .put_bool(false)
+                .put_u32(3);
+        });
+        conn.dispatch(&exit).unwrap();
+        let status = conn.lock().channels[&0].exit.lock().unwrap().clone();
+        assert_eq!(status, ExitStatus::Code(3));
+
+        let unknown = msg(MSG_CHANNEL_REQUEST, |w| {
+            w.put_u32(0).put_string(b"surprise").put_bool(true);
+        });
+        conn.dispatch(&unknown).unwrap();
+        let sent = queued(&mut out);
+        assert_eq!(
+            sent,
+            vec![msg(MSG_CHANNEL_FAILURE, |w| {
+                w.put_u32(7);
+            })]
+        );
+    }
+
+    #[test]
+    fn close_removes_the_channel_and_answers_exactly_once() {
+        let (conn, mut out) = conn_with_channel();
+        let close = msg(MSG_CHANNEL_CLOSE, |w| {
+            w.put_u32(0);
+        });
+        conn.dispatch(&close).unwrap();
+        assert!(conn.lock().channels.is_empty());
+        assert_eq!(queued(&mut out).len(), 1);
+
+        // Haben wir schon geschlossen, antworten wir nicht noch einmal.
+        let (conn, mut out) = conn_with_channel();
+        conn.lock().channels.get_mut(&0).unwrap().close_sent = true;
+        conn.dispatch(&close).unwrap();
+        assert!(queued(&mut out).is_empty());
+    }
+
+    #[test]
+    fn truncated_and_unknown_messages_never_panic() {
+        for kind in 0..=255u8 {
+            for body_len in [0usize, 1, 3, 4, 5, 9, 12] {
+                let (conn, _out) = conn_with_channel();
+                let mut m = vec![kind];
+                m.extend(std::iter::repeat_n(0u8, body_len));
+                let _ = conn.dispatch(&m);
+            }
+        }
+        let (conn, _out) = conn_with_channel();
+        assert!(is_violation(conn.dispatch(&[200])));
+    }
+
+    #[test]
+    fn failing_the_connection_wakes_everyone_and_blocks_new_work() {
+        let (conn, _out) = conn_with_channel();
+        let (tx, mut rx) = oneshot::channel::<bool>();
+        conn.lock()
+            .channels
+            .get_mut(&0)
+            .unwrap()
+            .replies
+            .push_back(tx);
+        conn.fail(Error::ConnectionLost("boom".into()));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(conn.lock().channels.is_empty());
+        assert!(
+            matches!(conn.lost_error(), Error::ConnectionLost(m) if m == "connection lost: boom" || m.contains("boom"))
+        );
+    }
+}

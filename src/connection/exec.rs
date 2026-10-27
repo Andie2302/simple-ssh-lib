@@ -6,6 +6,7 @@ use super::Session;
 use super::channel::{ChannelReader, ExitStatus, open_session};
 use super::mux::Event;
 use crate::error::{Error, Result};
+use crate::wire::check_field;
 
 #[derive(Debug, Clone)]
 pub struct ExecOutput {
@@ -32,6 +33,7 @@ impl Session {
     /// der Befehl schon ausgibt, bevor er alles gelesen hat. Beendet sich der
     /// Befehl, ohne die ganze Eingabe zu lesen, ist das kein Fehler.
     pub async fn exec_with_input(&self, command: &str, input: &[u8]) -> Result<ExecOutput> {
+        check_field(command, "command")?;
         let channel = open_session(&self.handle).await?;
         let accepted = channel
             .core()

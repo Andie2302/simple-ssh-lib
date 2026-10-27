@@ -1,0 +1,103 @@
+[package]
+name = "simple-ssh-lib-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tokio = { version = "1", features = ["rt", "time", "io-util", "macros"] }
+
+[dependencies.simple-ssh-lib]
+path = ".."
+
+# Eigenes Workspace, damit `cargo build` im Hauptprojekt das Fuzz-Projekt nicht anfasst.
+[workspace]
+
+[[bin]]
+name = "wire_reader"
+path = "fuzz_targets/wire_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet_body"
+path = "fuzz_targets/packet_body.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kexinit"
+path = "fuzz_targets/kexinit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ecdh_reply"
+path = "fuzz_targets/ecdh_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "host_signature"
+path = "fuzz_targets/host_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cipher_open"
+path = "fuzz_targets/cipher_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sftp_response"
+path = "fuzz_targets/sftp_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mux_dispatch"
+path = "fuzz_targets/mux_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "private_key"
+path = "fuzz_targets/private_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "base64_decode"
+path = "fuzz_targets/base64_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "banner"
+path = "fuzz_targets/banner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sftp_stream"
+path = "fuzz_targets/sftp_stream.rs"
+test = false
+doc = false
+bench = false
+

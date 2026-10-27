@@ -3,7 +3,7 @@
 //! Unterstützt werden unverschlüsselte Keys und Keys mit Passphrase im
 //! `ssh-keygen`-Standardformat (`aes256-ctr` + `bcrypt`).
 
-mod base64;
+pub(crate) mod base64;
 
 use std::fmt;
 
@@ -91,11 +91,13 @@ impl PrivateKey {
             }
         }
 
-        if private.len() != 64 || private[32..] != public {
+        let Some((seed, embedded_public)) = private.split_first_chunk::<32>() else {
+            return Err(Error::Malformed("bad ed25519 private key"));
+        };
+        if embedded_public != public {
             return Err(Error::Malformed("bad ed25519 private key"));
         }
-        let seed: [u8; 32] = private[..32].try_into().unwrap();
-        let signing = SigningKey::from_bytes(&seed);
+        let signing = SigningKey::from_bytes(seed);
         if signing.verifying_key().as_bytes() != &public {
             return Err(Error::Malformed("private key does not match public key"));
         }
@@ -161,11 +163,15 @@ fn decrypt(
     let mut material = Zeroizing::new([0u8; 48]);
     bcrypt_pbkdf::bcrypt_pbkdf(passphrase, salt, rounds, &mut material[..])
         .map_err(|_| Error::UnsupportedKey("kdf parameters"))?;
-    let key = Zeroizing::new(<[u8; 32]>::try_from(&material[..32]).unwrap());
-    let iv: [u8; 16] = material[32..].try_into().unwrap();
+    let Some((key, iv)) = material.split_first_chunk::<32>() else {
+        return Err(Error::UnsupportedKey("kdf parameters"));
+    };
+    let Some(iv) = iv.first_chunk::<16>() else {
+        return Err(Error::UnsupportedKey("kdf parameters"));
+    };
 
     let mut section = Zeroizing::new(encrypted.to_vec());
-    let mut cipher = Ctr128BE::<Aes256>::new(&(*key).into(), &iv.into());
+    let mut cipher = Ctr128BE::<Aes256>::new(&(*key).into(), &(*iv).into());
     cipher.apply_keystream(&mut section);
     Ok(section)
 }
