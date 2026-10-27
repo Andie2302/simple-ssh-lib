@@ -9,7 +9,7 @@ pub mod kexinit;
 pub mod packet;
 pub mod version;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 
 use crate::error::{Error, Result};
 use crate::wire::Reader;
@@ -23,26 +23,118 @@ pub const MSG_SERVICE_REQUEST: u8 = 5;
 pub const MSG_SERVICE_ACCEPT: u8 = 6;
 pub const MSG_NEWKEYS: u8 = 21;
 
+/// Zustand einer Senderichtung: Sequenznummer und (nach NEWKEYS) Chiffre.
+#[derive(Default)]
+struct SendState {
+    seq: u32,
+    cipher: Option<ChaChaPoly>,
+}
+
+impl SendState {
+    async fn send<W: AsyncWrite + Unpin>(&mut self, w: &mut W, payload: &[u8]) -> Result<()> {
+        let bytes = match &self.cipher {
+            None => packet::encode(payload)?,
+            Some(c) => c.seal(self.seq, payload)?,
+        };
+        w.write_all(&bytes).await?;
+        w.flush().await?;
+        self.seq = self.seq.wrapping_add(1);
+        Ok(())
+    }
+}
+
+/// Zustand einer Empfangsrichtung.
+#[derive(Default)]
+struct RecvState {
+    seq: u32,
+    cipher: Option<ChaChaPoly>,
+}
+
+impl RecvState {
+    /// Empfängt ein Paket; DISCONNECT wird zum Fehler. IGNORE/DEBUG werden
+    /// hier nicht gefiltert (siehe `recv`).
+    async fn recv_packet<R: AsyncRead + Unpin>(&mut self, r: &mut R) -> Result<Vec<u8>> {
+        let payload = match &self.cipher {
+            None => packet::read_packet(r).await?,
+            Some(c) => {
+                let mut enc_len = [0u8; 4];
+                r.read_exact(&mut enc_len).await?;
+                let len = c.decrypt_len(self.seq, &enc_len) as usize;
+                if len > packet::MAX_PACKET_LEN {
+                    return Err(Error::InvalidPacket("packet too large"));
+                }
+                let mut enc_body = vec![0u8; len];
+                r.read_exact(&mut enc_body).await?;
+                let mut tag = [0u8; TAG_LEN];
+                r.read_exact(&mut tag).await?;
+                c.open(self.seq, &enc_len, &enc_body, &tag)?
+            }
+        };
+        self.seq = self.seq.wrapping_add(1);
+        if payload.first() == Some(&MSG_DISCONNECT) {
+            let mut r = Reader::new(&payload[1..]);
+            let code = r.get_u32()?;
+            let message = String::from_utf8_lossy(r.get_string()?).into_owned();
+            return Err(Error::Disconnected { code, message });
+        }
+        if payload.is_empty() {
+            return Err(Error::ProtocolViolation("empty packet"));
+        }
+        Ok(payload)
+    }
+
+    /// Nächste Nachricht ohne IGNORE und DEBUG.
+    async fn recv<R: AsyncRead + Unpin>(&mut self, r: &mut R) -> Result<Vec<u8>> {
+        loop {
+            let p = self.recv_packet(r).await?;
+            if p[0] != MSG_IGNORE && p[0] != MSG_DEBUG {
+                return Ok(p);
+            }
+        }
+    }
+}
+
 /// Verbindung nach abgeschlossenem Handshake: Pakete laufen verschlüsselt.
 pub struct Transport<S> {
     stream: S,
-    send_seq: u32,
-    recv_seq: u32,
-    send_cipher: Option<ChaChaPoly>,
-    recv_cipher: Option<ChaChaPoly>,
+    send: SendState,
+    recv: RecvState,
     server_banner: String,
     host_key_fingerprint: String,
     session_id: [u8; 32],
+}
+
+/// Sendehälfte einer aufgeteilten Verbindung (siehe [`Transport::into_split`]).
+pub struct SendHalf<W> {
+    stream: W,
+    state: SendState,
+}
+
+/// Empfangshälfte einer aufgeteilten Verbindung.
+pub struct RecvHalf<R> {
+    stream: R,
+    state: RecvState,
+}
+
+impl<W: AsyncWrite + Unpin> SendHalf<W> {
+    pub async fn send(&mut self, payload: &[u8]) -> Result<()> {
+        self.state.send(&mut self.stream, payload).await
+    }
+}
+
+impl<R: AsyncRead + Unpin> RecvHalf<R> {
+    /// Nächste Nachricht ohne IGNORE und DEBUG; DISCONNECT wird zum Fehler.
+    pub async fn recv(&mut self) -> Result<Vec<u8>> {
+        self.state.recv(&mut self.stream).await
+    }
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
     fn plain(stream: S, server_banner: String) -> Self {
         Self {
             stream,
-            send_seq: 0,
-            recv_seq: 0,
-            send_cipher: None,
-            recv_cipher: None,
+            send: SendState::default(),
+            recv: RecvState::default(),
             server_banner,
             host_key_fingerprint: String::new(),
             session_id: [0; 32],
@@ -63,61 +155,36 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
     }
 
     pub fn is_encrypted(&self) -> bool {
-        self.send_cipher.is_some() && self.recv_cipher.is_some()
+        self.send.cipher.is_some() && self.recv.cipher.is_some()
     }
 
     /// Sendet einen Payload (erstes Byte = Nachrichtentyp).
     pub async fn send(&mut self, payload: &[u8]) -> Result<()> {
-        let bytes = match &self.send_cipher {
-            None => packet::encode(payload)?,
-            Some(c) => c.seal(self.send_seq, payload)?,
-        };
-        self.stream.write_all(&bytes).await?;
-        self.stream.flush().await?;
-        self.send_seq = self.send_seq.wrapping_add(1);
-        Ok(())
+        self.send.send(&mut self.stream, payload).await
     }
 
-    /// Empfängt ein Paket; DISCONNECT wird zum Fehler. IGNORE/DEBUG werden
-    /// hier nicht gefiltert (siehe [`Transport::recv`]).
     async fn recv_packet(&mut self) -> Result<Vec<u8>> {
-        let payload = match &self.recv_cipher {
-            None => packet::read_packet(&mut self.stream).await?,
-            Some(c) => {
-                let mut enc_len = [0u8; 4];
-                self.stream.read_exact(&mut enc_len).await?;
-                let len = c.decrypt_len(self.recv_seq, &enc_len) as usize;
-                if len > packet::MAX_PACKET_LEN {
-                    return Err(Error::InvalidPacket("packet too large"));
-                }
-                let mut enc_body = vec![0u8; len];
-                self.stream.read_exact(&mut enc_body).await?;
-                let mut tag = [0u8; TAG_LEN];
-                self.stream.read_exact(&mut tag).await?;
-                c.open(self.recv_seq, &enc_len, &enc_body, &tag)?
-            }
-        };
-        self.recv_seq = self.recv_seq.wrapping_add(1);
-        if payload.first() == Some(&MSG_DISCONNECT) {
-            let mut r = Reader::new(&payload[1..]);
-            let code = r.get_u32()?;
-            let message = String::from_utf8_lossy(r.get_string()?).into_owned();
-            return Err(Error::Disconnected { code, message });
-        }
-        if payload.is_empty() {
-            return Err(Error::ProtocolViolation("empty packet"));
-        }
-        Ok(payload)
+        self.recv.recv_packet(&mut self.stream).await
     }
 
     /// Empfängt die nächste Nachricht, ohne IGNORE und DEBUG.
     pub async fn recv(&mut self) -> Result<Vec<u8>> {
-        loop {
-            let p = self.recv_packet().await?;
-            if p[0] != MSG_IGNORE && p[0] != MSG_DEBUG {
-                return Ok(p);
-            }
-        }
+        self.recv.recv(&mut self.stream).await
+    }
+
+    /// Teilt die Verbindung, damit gleichzeitig gelesen und geschrieben werden kann.
+    pub fn into_split(self) -> (RecvHalf<ReadHalf<S>>, SendHalf<WriteHalf<S>>) {
+        let (r, w) = tokio::io::split(self.stream);
+        (
+            RecvHalf {
+                stream: r,
+                state: self.recv,
+            },
+            SendHalf {
+                stream: w,
+                state: self.send,
+            },
+        )
     }
 
     /// `SSH_MSG_SERVICE_REQUEST`, z.B. für `ssh-userauth`.

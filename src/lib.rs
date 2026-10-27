@@ -9,5 +9,5 @@ pub mod keys;
 pub mod transport;
 pub mod wire;
 
-pub use connection::{Config, ExecOutput, ExitStatus, Session};
+pub use connection::{Config, ExecOutput, ExitStatus, Pty, Session, Shell};
 pub use error::{Error, Result};

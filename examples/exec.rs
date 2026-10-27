@@ -26,7 +26,7 @@ async fn main() -> simple_ssh_lib::Result<()> {
     let key = PrivateKey::from_openssh(&pem, passphrase.as_deref().map(str::as_bytes))?;
 
     let config = Config::new(user, key, HostKeyCheck::Fingerprint(fingerprint.clone()));
-    let mut session = Session::connect(addr, config).await?;
+    let session = Session::connect(addr, config).await?;
     let out = session.exec(command).await?;
 
     std::io::stdout().write_all(&out.stdout)?;

@@ -6,6 +6,7 @@
 | `handshake` | Handshake gegen einen echten SSH-Server |
 | `auth` | Public-Key-Anmeldung (auch mit Passphrase-Key) |
 | `exec` | Befehl ausführen, stdout/stderr/Exit-Code zurückgeben |
+| `shell` | Interaktive Shell mit PTY (stdin -> Shell -> stdout) |
 
 ## Lokalen Test-sshd starten
 
@@ -38,6 +39,13 @@ Danach lässt sich ein Befehl ausführen (gleiche Argumente wie bei `auth`, plus
 
 ```sh
 cargo run --example exec -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key "uname -a; ls /"
+```
+
+Und die Shell (Eingabe per Pipe, bei `exit` endet das Beispiel):
+
+```sh
+printf 'echo $TERM; stty size\nexit\n' | \
+  cargo run --example shell -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key
 ```
 
 Die Integrationstests (`cargo test`) starten ihren eigenen `sshd` automatisch

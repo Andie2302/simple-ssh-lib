@@ -56,15 +56,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
         // NEWKEYS in beide Richtungen; strict KEX setzt die Sequenznummern zurück.
         let keys = kex::derive_keys(&secret, &h, &h);
         t.send(&[MSG_NEWKEYS]).await?;
-        t.send_cipher = Some(ChaChaPoly::new(&keys.client_to_server));
-        t.send_seq = 0;
+        t.send.cipher = Some(ChaChaPoly::new(&keys.client_to_server));
+        t.send.seq = 0;
 
         let newkeys = t.recv_packet().await?;
         if newkeys != [MSG_NEWKEYS] {
             return Err(Error::ProtocolViolation("expected NEWKEYS"));
         }
-        t.recv_cipher = Some(ChaChaPoly::new(&keys.server_to_client));
-        t.recv_seq = 0;
+        t.recv.cipher = Some(ChaChaPoly::new(&keys.server_to_client));
+        t.recv.seq = 0;
 
         Ok(t)
     }

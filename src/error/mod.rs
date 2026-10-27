@@ -78,4 +78,12 @@ pub enum Error {
     /// Die Ausgabe des Befehls überschritt `Config::max_output`.
     #[error("command output exceeded the configured limit")]
     OutputTooLarge,
+
+    /// Der Server hat einen Channel-Request (z.B. `pty-req`, `shell`) abgelehnt.
+    #[error("server rejected request `{0}`")]
+    RequestRejected(&'static str),
+
+    /// Die Verbindung ist abgebrochen oder wurde beendet.
+    #[error("connection lost: {0}")]
+    ConnectionLost(String),
 }
