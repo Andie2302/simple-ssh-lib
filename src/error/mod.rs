@@ -66,4 +66,16 @@ pub enum Error {
     /// Der Server bietet keine Public-Key-Authentifizierung an.
     #[error("server does not offer public key authentication")]
     PublicKeyAuthUnavailable,
+
+    /// Der Server hat das Öffnen eines Channels abgelehnt.
+    #[error("channel open failed (reason {reason}): {message}")]
+    ChannelOpenFailed { reason: u32, message: String },
+
+    /// Der Server hat den Befehl (`exec`-Request) abgelehnt.
+    #[error("server rejected the command")]
+    CommandRejected,
+
+    /// Die Ausgabe des Befehls überschritt `Config::max_output`.
+    #[error("command output exceeded the configured limit")]
+    OutputTooLarge,
 }

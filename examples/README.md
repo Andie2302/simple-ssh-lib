@@ -5,6 +5,7 @@
 | `wire_and_packet` | Wire-Format und Paketformat ohne Netzwerk |
 | `handshake` | Handshake gegen einen echten SSH-Server |
 | `auth` | Public-Key-Anmeldung (auch mit Passphrase-Key) |
+| `exec` | Befehl ausführen, stdout/stderr/Exit-Code zurückgeben |
 
 ## Lokalen Test-sshd starten
 
@@ -31,6 +32,12 @@ cat user_key.pub >> /tmp/sshd-demo/authorized_keys
 # sshd mit -o AuthorizedKeysFile=/tmp/sshd-demo/authorized_keys -o StrictModes=no starten
 SSH_KEY_PASSPHRASE='meine passphrase' \
   cargo run --example auth -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key
+```
+
+Danach lässt sich ein Befehl ausführen (gleiche Argumente wie bei `auth`, plus Befehl):
+
+```sh
+cargo run --example exec -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key "uname -a; ls /"
 ```
 
 Die Integrationstests (`cargo test`) starten ihren eigenen `sshd` automatisch
