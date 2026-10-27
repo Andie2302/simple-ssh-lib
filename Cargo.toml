@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+getrandom = "0.4.3"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["io-util", "rt", "macros"] }
