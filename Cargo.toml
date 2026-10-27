@@ -19,3 +19,8 @@ zeroize = "1.9.1"
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["io-std", "io-util", "macros", "rt", "time"] }
+
+# Kryptografie-Crates auch im Debug-Build optimieren; sonst sind Tests mit vielen
+# Schlüsselwechseln und großen Übertragungen unnötig langsam.
+[profile.dev.package."*"]
+opt-level = 3

@@ -6,8 +6,10 @@
 //! der nie über ein `await` gehalten wird.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::task::Waker;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
@@ -15,7 +17,9 @@ use tokio::task::AbortHandle;
 
 use super::channel::ExitStatus;
 use crate::error::{Error, Result};
-use crate::transport::{RecvHalf, SendHalf};
+use crate::transport::cipher::ChaChaPoly;
+use crate::transport::rekey::{PendingKex, RekeyContext, is_kex_class};
+use crate::transport::{MSG_NEWKEYS, RecvHalf, SendHalf, kexinit};
 use crate::wire::{Reader, Writer};
 
 pub(crate) const MSG_DISCONNECT: u8 = 1;
@@ -72,9 +76,38 @@ pub(crate) struct State {
     pub lost: Option<String>,
 }
 
+/// Eintrag der Sendewarteschlange. Nur der Schreib-Task schreibt auf den Draht, damit
+/// die Reihenfolge und der Zeitpunkt des Schlüsselwechsels eindeutig bleiben.
+pub(crate) enum Out {
+    /// Normale Nachricht; während eines Schlüsselwechsels zurückgehalten (Typ >= 50).
+    Packet(Vec<u8>),
+    /// Nachricht des Schlüsselaustauschs; geht immer sofort raus.
+    Kex(Vec<u8>),
+    /// Ab hier bis `Install` keine Kanalnachrichten mehr senden.
+    BeginKex,
+    /// Neue Sendeschlüssel aktivieren (direkt nach dem NEWKEYS-Paket).
+    Install(ChaChaPoly),
+}
+
+/// Wann wir selbst einen Schlüsselwechsel anstoßen.
+#[derive(Clone, Copy)]
+pub(crate) struct RekeyLimits {
+    pub bytes: u64,
+    pub interval: Duration,
+}
+
+/// So lange darf ein Schlüsselwechsel dauern, bevor die Verbindung als tot gilt.
+const REKEY_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub(crate) struct Conn {
-    pub out: mpsc::UnboundedSender<Vec<u8>>,
+    out: mpsc::UnboundedSender<Out>,
     state: Mutex<State>,
+    /// Unser KEXINIT, solange ein Schlüsselwechsel läuft. Wer es hier einträgt, sendet es.
+    kex: Mutex<Option<Vec<u8>>>,
+    /// Bytes (gesendet + empfangen) seit dem letzten Schlüsselwechsel.
+    traffic: AtomicU64,
+    /// Abgeschlossene Schlüsselwechsel nach dem ersten Handshake.
+    rekeys: AtomicU64,
 }
 
 fn violation<T>(what: &'static str) -> Result<T> {
@@ -82,7 +115,7 @@ fn violation<T>(what: &'static str) -> Result<T> {
 }
 
 impl Conn {
-    fn new(out: mpsc::UnboundedSender<Vec<u8>>) -> Self {
+    fn new(out: mpsc::UnboundedSender<Out>) -> Self {
         Self {
             out,
             state: Mutex::new(State {
@@ -90,7 +123,23 @@ impl Conn {
                 next_id: 0,
                 lost: None,
             }),
+            kex: Mutex::new(None),
+            traffic: AtomicU64::new(0),
+            rekeys: AtomicU64::new(0),
         }
+    }
+
+    fn kex_slot(&self) -> MutexGuard<'_, Option<Vec<u8>>> {
+        self.kex.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Reiht eine normale Nachricht ein. `Err`, wenn der Schreib-Task beendet ist.
+    pub fn enqueue(&self, payload: Vec<u8>) -> std::result::Result<(), ()> {
+        self.out.send(Out::Packet(payload)).map_err(|_| ())
+    }
+
+    fn enqueue_out(&self, item: Out) -> Result<()> {
+        self.out.send(item).map_err(|_| self.lost_error())
     }
 
     pub fn lock(&self) -> MutexGuard<'_, State> {
@@ -108,7 +157,7 @@ impl Conn {
 
     /// Stellt eine Nachricht in die Sendewarteschlange.
     pub fn send(&self, payload: Vec<u8>) -> Result<()> {
-        self.out.send(payload).map_err(|_| self.lost_error())
+        self.enqueue(payload).map_err(|_| self.lost_error())
     }
 
     /// Markiert die Verbindung als verloren und weckt alle Wartenden.
@@ -315,7 +364,7 @@ impl Drop for Guard {
             .put_u32(DISCONNECT_BY_APPLICATION)
             .put_string(b"")
             .put_string(b"");
-        let _ = self.conn.out.send(w.into_vec());
+        let _ = self.conn.enqueue(w.into_vec());
         self.reader.abort();
     }
 }
@@ -332,49 +381,221 @@ impl Handle {
     pub fn is_lost(&self) -> bool {
         self.conn.lock().lost.is_some()
     }
+
+    /// Anzahl abgeschlossener Schlüsselwechsel seit dem ersten Handshake.
+    pub fn rekey_count(&self) -> u64 {
+        self.conn.rekeys.load(Ordering::Relaxed)
+    }
 }
 
 /// Startet Lese- und Schreib-Task.
-pub(crate) fn spawn<R, W>(recv: RecvHalf<R>, send: SendHalf<W>) -> Handle
+pub(crate) fn spawn<R, W>(
+    recv: RecvHalf<R>,
+    send: SendHalf<W>,
+    context: RekeyContext,
+    limits: RekeyLimits,
+) -> Handle
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (tx, rx) = mpsc::unbounded_channel();
     let conn = Arc::new(Conn::new(tx));
-    let reader = tokio::spawn(reader_task(recv, conn.clone())).abort_handle();
-    tokio::spawn(writer_task(send, rx, Arc::downgrade(&conn), reader.clone()));
+    let reader = tokio::spawn(reader_task(recv, conn.clone(), context)).abort_handle();
+    tokio::spawn(writer_task(
+        send,
+        rx,
+        Arc::downgrade(&conn),
+        reader.clone(),
+        limits,
+    ));
     Handle {
         conn: conn.clone(),
         _guard: Arc::new(Guard { conn, reader }),
     }
 }
 
-async fn reader_task<R: AsyncRead + Unpin>(mut recv: RecvHalf<R>, conn: Arc<Conn>) {
+async fn reader_task<R: AsyncRead + Unpin>(
+    mut recv: RecvHalf<R>,
+    conn: Arc<Conn>,
+    context: RekeyContext,
+) {
     let err = loop {
-        match recv.recv().await {
-            Ok(msg) => {
-                if let Err(e) = conn.dispatch(&msg) {
-                    break e;
-                }
-            }
+        let msg = match recv.recv().await {
+            Ok(msg) => msg,
             Err(e) => break e,
+        };
+        conn.traffic.fetch_add(msg.len() as u64, Ordering::Relaxed);
+        let handled = if msg[0] == kexinit::MSG_KEXINIT {
+            rekey(&mut recv, &conn, &context, msg).await
+        } else {
+            conn.dispatch(&msg)
+        };
+        if let Err(e) = handled {
+            break e;
         }
     };
     conn.fail(err);
 }
 
+/// Schlüsselwechsel, ausgelöst durch das KEXINIT des Servers (`server_kexinit`).
+/// Hat unsere Seite schon ein KEXINIT geschickt (Schwelle erreicht), wird es verwendet,
+/// sonst schicken wir jetzt eines.
+async fn rekey<R: AsyncRead + Unpin>(
+    recv: &mut RecvHalf<R>,
+    conn: &Conn,
+    context: &RekeyContext,
+    server_kexinit: Vec<u8>,
+) -> Result<()> {
+    let ours = {
+        let mut slot = conn.kex_slot();
+        match slot.as_ref() {
+            Some(existing) => existing.clone(),
+            None => {
+                let ours = kexinit::build_client_kexinit(false)?;
+                *slot = Some(ours.clone());
+                conn.enqueue_out(Out::BeginKex)?;
+                conn.enqueue_out(Out::Kex(ours.clone()))?;
+                ours
+            }
+        }
+    };
+
+    let (pending, init_message) = PendingKex::begin(ours, server_kexinit)?;
+    conn.enqueue_out(Out::Kex(init_message))?;
+    let reply = recv.recv().await?;
+    let keys = pending.finish(context, &reply)?;
+
+    // NEWKEYS geht noch mit den alten Schlüsseln raus, danach schaltet der Schreib-Task um.
+    conn.enqueue_out(Out::Kex(vec![MSG_NEWKEYS]))?;
+    conn.enqueue_out(Out::Install(ChaChaPoly::new(&keys.client_to_server)))?;
+    if recv.recv().await? != [MSG_NEWKEYS] {
+        return Err(Error::ProtocolViolation("expected NEWKEYS"));
+    }
+    recv.install(ChaChaPoly::new(&keys.server_to_client));
+
+    // Erst jetzt ist ein neuer Austausch wieder zulässig (nächstes KEXINIT, Schwelle).
+    *conn.kex_slot() = None;
+    conn.rekeys.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Zustand des Schreib-Tasks. Die Verbindung wird bewusst nur je Nachricht über ein
+/// `Weak` gehalten: Der Task darf sie nicht am Leben halten, sonst endet er nie.
+struct WriterState<W> {
+    send: SendHalf<W>,
+    limits: RekeyLimits,
+    /// Ein Schlüsselwechsel läuft: Kanalnachrichten zurückhalten.
+    holding: bool,
+    deferred: VecDeque<Vec<u8>>,
+    hold_deadline: Option<Instant>,
+    last_kex: Instant,
+}
+
+impl<W: AsyncWrite + Unpin> WriterState<W> {
+    async fn write(&mut self, conn: &Conn, payload: &[u8]) -> Result<()> {
+        self.send.send(payload).await?;
+        conn.traffic
+            .fetch_add(payload.len() as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn handle(&mut self, conn: &Conn, item: Out) -> Result<()> {
+        match item {
+            Out::BeginKex => {
+                self.holding = true;
+                self.hold_deadline
+                    .get_or_insert(Instant::now() + REKEY_TIMEOUT);
+            }
+            Out::Kex(payload) => self.write(conn, &payload).await?,
+            Out::Install(cipher) => {
+                self.send.install(cipher);
+                self.holding = false;
+                self.hold_deadline = None;
+                self.last_kex = Instant::now();
+                conn.traffic.store(0, Ordering::Relaxed);
+                // Der Rückstau läuft wieder durch die normale Prüfung, damit auch hier
+                // die Schwelle gilt und bei Bedarf gleich der nächste Wechsel beginnt.
+                let backlog = std::mem::take(&mut self.deferred);
+                for payload in backlog {
+                    self.packet(conn, payload).await?;
+                }
+            }
+            Out::Packet(payload) => self.packet(conn, payload).await?,
+        }
+        Ok(())
+    }
+
+    async fn packet(&mut self, conn: &Conn, payload: Vec<u8>) -> Result<()> {
+        let held_back = !is_kex_class(payload[0]);
+        if held_back && self.holding {
+            self.deferred.push_back(payload);
+            return Ok(());
+        }
+        if held_back && self.rekey_due(conn) {
+            // Wer den Platz belegt, sendet das KEXINIT. Ist er schon belegt, hat der
+            // Leser einen Wechsel begonnen und BeginKex folgt.
+            let started = {
+                let mut slot = conn.kex_slot();
+                if slot.is_none() {
+                    let ours = kexinit::build_client_kexinit(false)?;
+                    *slot = Some(ours.clone());
+                    Some(ours)
+                } else {
+                    None
+                }
+            };
+            if let Some(ours) = started {
+                self.write(conn, &ours).await?;
+                self.holding = true;
+                self.hold_deadline = Some(Instant::now() + REKEY_TIMEOUT);
+                self.deferred.push_back(payload);
+                return Ok(());
+            }
+        }
+        self.write(conn, &payload).await
+    }
+
+    fn rekey_due(&self, conn: &Conn) -> bool {
+        conn.traffic.load(Ordering::Relaxed) >= self.limits.bytes
+            || self.last_kex.elapsed() >= self.limits.interval
+    }
+}
+
 async fn writer_task<W: AsyncWrite + Unpin>(
-    mut send: SendHalf<W>,
-    mut queue: mpsc::UnboundedReceiver<Vec<u8>>,
+    send: SendHalf<W>,
+    mut queue: mpsc::UnboundedReceiver<Out>,
     conn: Weak<Conn>,
     reader: AbortHandle,
+    limits: RekeyLimits,
 ) {
-    while let Some(payload) = queue.recv().await {
-        if let Err(e) = send.send(&payload).await {
-            if let Some(conn) = conn.upgrade() {
-                conn.fail(e);
-            }
+    let mut state = WriterState {
+        send,
+        limits,
+        holding: false,
+        deferred: VecDeque::new(),
+        hold_deadline: None,
+        last_kex: Instant::now(),
+    };
+
+    loop {
+        let item = match state.hold_deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline.into(), queue.recv()).await {
+                Ok(item) => item,
+                Err(_) => {
+                    if let Some(conn) = conn.upgrade() {
+                        conn.fail(Error::ConnectionLost("key re-exchange timed out".into()));
+                    }
+                    reader.abort();
+                    return;
+                }
+            },
+            None => queue.recv().await,
+        };
+        let Some(item) = item else { return };
+        let Some(conn) = conn.upgrade() else { return };
+        if let Err(e) = state.handle(&conn, item).await {
+            conn.fail(e);
             reader.abort();
             return;
         }

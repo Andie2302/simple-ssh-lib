@@ -17,10 +17,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
         let mut t = Self::plain(stream, server_banner);
 
         // KEXINIT. Strict KEX: es muss das allererste Paket sein.
-        let client_kexinit = kexinit::build_client_kexinit()?;
+        let client_kexinit = kexinit::build_client_kexinit(true)?;
         t.send(&client_kexinit).await?;
         let server_kexinit = t.recv_packet().await?;
-        kexinit::check_server_kexinit(&server_kexinit)?;
+        kexinit::check_server_kexinit(&server_kexinit, true)?;
 
         // ECDH.
         let ecdh = EcdhClient::new()?;
@@ -47,6 +47,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
         let host_key = HostKey::from_blob(reply.host_key_blob.to_vec());
         t.host_key_fingerprint = host_key.fingerprint();
         t.session_id = h;
+        t.host_key_blob = reply.host_key_blob.to_vec();
         if !host_key_check.accepts(&host_key) {
             return Err(Error::HostKeyRejected {
                 fingerprint: t.host_key_fingerprint.clone(),

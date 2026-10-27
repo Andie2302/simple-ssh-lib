@@ -18,6 +18,8 @@ pub struct Options {
     pub pubkey_auth: bool,
     /// `Subsystem sftp` eintragen (setzt installierten `sftp-server` voraus).
     pub sftp: bool,
+    /// Wert für `RekeyLimit` (z.B. `"64K"`): der Server wechselt dann selbst die Schlüssel.
+    pub rekey_limit: Option<&'static str>,
 }
 
 impl Default for Options {
@@ -25,6 +27,7 @@ impl Default for Options {
         Self {
             pubkey_auth: true,
             sftp: true,
+            rekey_limit: None,
         }
     }
 }
@@ -117,6 +120,10 @@ impl TestSshd {
             String::new()
         };
 
+        let rekey_line = opts
+            .rekey_limit
+            .map_or(String::new(), |l| format!("RekeyLimit {l}\n"));
+
         let user = String::from_utf8(Command::new("id").arg("-un").output().ok()?.stdout)
             .ok()?
             .trim()
@@ -129,7 +136,7 @@ impl TestSshd {
                 "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nUsePAM no\n\
                  StrictModes no\nPermitRootLogin yes\nPasswordAuthentication no\n\
                  KbdInteractiveAuthentication no\nPubkeyAuthentication {}\n\
-                 AuthorizedKeysFile {}\nAllowUsers {user}\n{sftp_line}",
+                 AuthorizedKeysFile {}\nAllowUsers {user}\n{sftp_line}{rekey_line}",
                 host.display(),
                 dir.join("sshd.pid").display(),
                 if opts.pubkey_auth { "yes" } else { "no" },

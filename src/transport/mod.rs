@@ -7,6 +7,7 @@ pub mod hostkey;
 pub mod kex;
 pub mod kexinit;
 pub mod packet;
+pub mod rekey;
 pub mod version;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -101,6 +102,7 @@ pub struct Transport<S> {
     recv: RecvState,
     server_banner: String,
     host_key_fingerprint: String,
+    host_key_blob: Vec<u8>,
     session_id: [u8; 32],
 }
 
@@ -120,12 +122,25 @@ impl<W: AsyncWrite + Unpin> SendHalf<W> {
     pub async fn send(&mut self, payload: &[u8]) -> Result<()> {
         self.state.send(&mut self.stream, payload).await
     }
+
+    /// Aktiviert neue Schlüssel für alle folgenden Pakete (Sequenznummer wieder 0,
+    /// wie es Strict KEX nach jedem NEWKEYS verlangt).
+    pub fn install(&mut self, cipher: ChaChaPoly) {
+        self.state.cipher = Some(cipher);
+        self.state.seq = 0;
+    }
 }
 
 impl<R: AsyncRead + Unpin> RecvHalf<R> {
     /// Nächste Nachricht ohne IGNORE und DEBUG; DISCONNECT wird zum Fehler.
     pub async fn recv(&mut self) -> Result<Vec<u8>> {
         self.state.recv(&mut self.stream).await
+    }
+
+    /// Aktiviert neue Schlüssel für alle folgenden Pakete (siehe [`SendHalf::install`]).
+    pub fn install(&mut self, cipher: ChaChaPoly) {
+        self.state.cipher = Some(cipher);
+        self.state.seq = 0;
     }
 }
 
@@ -137,6 +152,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
             recv: RecvState::default(),
             server_banner,
             host_key_fingerprint: String::new(),
+            host_key_blob: Vec::new(),
             session_id: [0; 32],
         }
     }
@@ -173,8 +189,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
     }
 
     /// Teilt die Verbindung, damit gleichzeitig gelesen und geschrieben werden kann.
-    pub fn into_split(self) -> (RecvHalf<ReadHalf<S>>, SendHalf<WriteHalf<S>>) {
+    /// Der [`rekey::RekeyContext`] enthält, was für spätere Schlüsselwechsel nötig ist.
+    pub fn into_split(
+        self,
+    ) -> (
+        RecvHalf<ReadHalf<S>>,
+        SendHalf<WriteHalf<S>>,
+        rekey::RekeyContext,
+    ) {
         let (r, w) = tokio::io::split(self.stream);
+        let context = rekey::RekeyContext {
+            server_banner: self.server_banner,
+            session_id: self.session_id,
+            host_key_blob: self.host_key_blob,
+        };
         (
             RecvHalf {
                 stream: r,
@@ -184,6 +212,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
                 stream: w,
                 state: self.send,
             },
+            context,
         )
     }
 

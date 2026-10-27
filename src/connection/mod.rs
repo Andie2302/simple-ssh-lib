@@ -9,6 +9,8 @@ mod exec;
 mod mux;
 mod shell;
 
+use std::time::Duration;
+
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
@@ -25,6 +27,11 @@ pub use shell::{Pty, Shell};
 /// Standardgrenze für die gesammelte Ausgabe eines Befehls (stdout + stderr).
 pub const DEFAULT_MAX_OUTPUT: usize = 64 * 1024 * 1024;
 
+/// Datenmenge, nach der wir die Schlüssel wechseln.
+pub const DEFAULT_REKEY_BYTES: u64 = 1024 * 1024 * 1024;
+/// Zeit, nach der wir die Schlüssel wechseln.
+pub const DEFAULT_REKEY_INTERVAL: Duration = Duration::from_secs(3600);
+
 /// Verbindungsparameter. Host-Key-Prüfung und Key sind Pflicht.
 pub struct Config {
     pub user: String,
@@ -33,6 +40,10 @@ pub struct Config {
     /// Obergrenze für gesammelte Daten (stdout + stderr eines `exec`, `Sftp::read`);
     /// danach `Error::OutputTooLarge`.
     pub max_output: usize,
+    /// Nach so vielen übertragenen Bytes (gesendet + empfangen) tauschen wir die Schlüssel.
+    pub rekey_after_bytes: u64,
+    /// Spätestens nach dieser Zeit tauschen wir die Schlüssel.
+    pub rekey_interval: Duration,
 }
 
 impl Config {
@@ -42,11 +53,25 @@ impl Config {
             key,
             host_key,
             max_output: DEFAULT_MAX_OUTPUT,
+            rekey_after_bytes: DEFAULT_REKEY_BYTES,
+            rekey_interval: DEFAULT_REKEY_INTERVAL,
         }
     }
 
     pub fn max_output(mut self, bytes: usize) -> Self {
         self.max_output = bytes;
+        self
+    }
+
+    /// Schlüsselwechsel nach dieser Datenmenge (Standard 1 GiB, wie OpenSSH).
+    pub fn rekey_after_bytes(mut self, bytes: u64) -> Self {
+        self.rekey_after_bytes = bytes;
+        self
+    }
+
+    /// Schlüsselwechsel spätestens nach dieser Zeit (Standard 1 Stunde).
+    pub fn rekey_interval(mut self, interval: Duration) -> Self {
+        self.rekey_interval = interval;
         self
     }
 }
@@ -64,6 +89,9 @@ impl Session {
     /// Verbindet per TCP, führt Handshake und Anmeldung aus.
     pub async fn connect(addr: impl ToSocketAddrs, config: Config) -> Result<Self> {
         let stream = TcpStream::connect(addr).await?;
+        // Viele kleine Pakete (Tastendrücke, Schlüsselaustausch): Nagle würde sie um
+        // Dutzende Millisekunden verzögern.
+        stream.set_nodelay(true)?;
         Self::from_stream(stream, config).await
     }
 
@@ -77,13 +105,26 @@ impl Session {
         authenticate(&mut transport, &config.user, &config.key).await?;
         let server_banner = transport.server_banner().to_owned();
         let host_key_fingerprint = transport.host_key_fingerprint().to_owned();
-        let (recv, send) = transport.into_split();
+        let (recv, send, rekey_context) = transport.into_split();
         Ok(Self {
-            handle: mux::spawn(recv, send),
+            handle: mux::spawn(
+                recv,
+                send,
+                rekey_context,
+                mux::RekeyLimits {
+                    bytes: config.rekey_after_bytes,
+                    interval: config.rekey_interval,
+                },
+            ),
             max_output: config.max_output,
             server_banner,
             host_key_fingerprint,
         })
+    }
+
+    /// Anzahl der Schlüsselwechsel seit dem Verbindungsaufbau (zur Diagnose).
+    pub fn rekey_count(&self) -> u64 {
+        self.handle.rekey_count()
     }
 
     pub fn server_banner(&self) -> &str {

@@ -358,8 +358,7 @@ impl AsyncWrite for ChannelWriter {
         w.put_u8(MSG_CHANNEL_DATA)
             .put_u32(chan.remote)
             .put_string(&buf[..n]);
-        conn.out
-            .send(w.into_vec())
+        conn.enqueue(w.into_vec())
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "connection closed"))?;
         Poll::Ready(Ok(n))
     }

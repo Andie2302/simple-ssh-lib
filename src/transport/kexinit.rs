@@ -14,11 +14,16 @@ pub const MAC_PLACEHOLDER: &str = "hmac-sha2-256";
 pub const STRICT_KEX_CLIENT: &str = "kex-strict-c-v00@openssh.com";
 pub const STRICT_KEX_SERVER: &str = "kex-strict-s-v00@openssh.com";
 
-/// Baut unser KEXINIT mit zufälligem Cookie.
-pub fn build_client_kexinit() -> Result<Vec<u8>> {
+/// Baut unser KEXINIT mit zufälligem Cookie. Der Strict-KEX-Marker gehört nur in
+/// den ersten Austausch (`initial`), nicht in spätere (Rekeying).
+pub fn build_client_kexinit(initial: bool) -> Result<Vec<u8>> {
     let mut cookie = [0u8; 16];
     getrandom::fill(&mut cookie).map_err(|_| Error::ProtocolViolation("rng failure"))?;
-    Ok(build(&cookie, &[KEX_ALGORITHM, STRICT_KEX_CLIENT]))
+    if initial {
+        Ok(build(&cookie, &[KEX_ALGORITHM, STRICT_KEX_CLIENT]))
+    } else {
+        Ok(build(&cookie, &[KEX_ALGORITHM]))
+    }
 }
 
 /// Gemeinsamer Baustein für Client und (Test-)Server.
@@ -49,8 +54,9 @@ fn require(list: &[&str], wanted: &str, category: &'static str) -> Result<()> {
     }
 }
 
-/// Prüft das KEXINIT des Servers gegen unseren festen Satz.
-pub fn check_server_kexinit(payload: &[u8]) -> Result<()> {
+/// Prüft das KEXINIT des Servers gegen unseren festen Satz. Im ersten Austausch
+/// (`initial`) muss der Server Strict KEX anbieten, beim Rekeying nicht mehr.
+pub fn check_server_kexinit(payload: &[u8], initial: bool) -> Result<()> {
     let mut r = Reader::new(payload);
     if r.get_u8()? != MSG_KEXINIT {
         return Err(Error::ProtocolViolation("expected KEXINIT"));
@@ -71,7 +77,9 @@ pub fn check_server_kexinit(payload: &[u8]) -> Result<()> {
     r.finish()?;
 
     require(&kex, KEX_ALGORITHM, "key exchange")?;
-    require(&kex, STRICT_KEX_SERVER, "strict kex")?;
+    if initial {
+        require(&kex, STRICT_KEX_SERVER, "strict kex")?;
+    }
     require(&host_key, HOST_KEY_ALGORITHM, "host key")?;
     require(&enc_c2s, CIPHER, "cipher client->server")?;
     require(&enc_s2c, CIPHER, "cipher server->client")?;
