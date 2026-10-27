@@ -97,6 +97,10 @@ pub enum Error {
     /// SFTP steht auf dem Server nicht zur Verfügung (Subsystem fehlt oder falsche Version).
     #[error("sftp unavailable: {0}")]
     SftpUnavailable(String),
+
+    /// Eine Frist ist abgelaufen (`Config::timeout`).
+    #[error("timed out: {0}")]
+    Timeout(&'static str),
 }
 
 impl Error {

@@ -15,7 +15,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 use crate::auth::authenticate;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::keys::PrivateKey;
 use crate::transport::{HostKeyCheck, Transport};
 
@@ -32,6 +32,9 @@ pub const DEFAULT_REKEY_BYTES: u64 = 1024 * 1024 * 1024;
 /// Zeit, nach der wir die Schlüssel wechseln.
 pub const DEFAULT_REKEY_INTERVAL: Duration = Duration::from_secs(3600);
 
+/// Standardfrist für Verbindungsaufbau, Handshake und Anmeldung.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Verbindungsparameter. Host-Key-Prüfung und Key sind Pflicht.
 pub struct Config {
     pub user: String,
@@ -44,6 +47,10 @@ pub struct Config {
     pub rekey_after_bytes: u64,
     /// Spätestens nach dieser Zeit tauschen wir die Schlüssel.
     pub rekey_interval: Duration,
+    /// Frist für Verbindungsaufbau, Handshake und Anmeldung zusammen.
+    pub timeout: Duration,
+    /// Lebenszeichen-Prüfung: Intervall und erlaubte Anzahl ausgebliebener Intervalle.
+    pub keepalive: Option<(Duration, u32)>,
 }
 
 impl Config {
@@ -55,6 +62,8 @@ impl Config {
             max_output: DEFAULT_MAX_OUTPUT,
             rekey_after_bytes: DEFAULT_REKEY_BYTES,
             rekey_interval: DEFAULT_REKEY_INTERVAL,
+            timeout: DEFAULT_TIMEOUT,
+            keepalive: None,
         }
     }
 
@@ -74,6 +83,21 @@ impl Config {
         self.rekey_interval = interval;
         self
     }
+
+    /// Frist für TCP-Verbindung, Handshake und Anmeldung zusammen (Standard 30 s);
+    /// danach `Error::Timeout`.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Schickt alle `interval` eine Anfrage an den Server. Kommt `max_missed` Intervalle
+    /// lang gar nichts an, gilt die Verbindung als tot (`Error::ConnectionLost`) und alle
+    /// laufenden Operationen enden. Standardmäßig aus.
+    pub fn keepalive(mut self, interval: Duration, max_missed: u32) -> Self {
+        self.keepalive = Some((interval, max_missed));
+        self
+    }
 }
 
 /// Angemeldete SSH-Sitzung. Wird die letzte Kopie (Session, Shell) fallen
@@ -86,18 +110,34 @@ pub struct Session {
 }
 
 impl Session {
-    /// Verbindet per TCP, führt Handshake und Anmeldung aus.
+    /// Verbindet per TCP, führt Handshake und Anmeldung aus (höchstens `Config::timeout`).
     pub async fn connect(addr: impl ToSocketAddrs, config: Config) -> Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
-        // Viele kleine Pakete (Tastendrücke, Schlüsselaustausch): Nagle würde sie um
-        // Dutzende Millisekunden verzögern.
-        stream.set_nodelay(true)?;
-        Self::from_stream(stream, config).await
+        let limit = config.timeout;
+        let setup = async {
+            let stream = TcpStream::connect(addr).await?;
+            // Viele kleine Pakete (Tastendrücke, Schlüsselaustausch): Nagle würde sie um
+            // Dutzende Millisekunden verzögern.
+            stream.set_nodelay(true)?;
+            Self::establish(stream, config).await
+        };
+        tokio::time::timeout(limit, setup)
+            .await
+            .map_err(|_| Error::Timeout("connect"))?
     }
 
-    /// Wie [`Session::connect`], aber über einen bereits offenen Stream.
-    /// Muss innerhalb einer Tokio-Runtime aufgerufen werden.
+    /// Wie [`Session::connect`], aber über einen bereits offenen Stream (die Frist
+    /// gilt für Handshake und Anmeldung). Muss innerhalb einer Tokio-Runtime laufen.
     pub async fn from_stream<S>(stream: S, config: Config) -> Result<Self>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let limit = config.timeout;
+        tokio::time::timeout(limit, Self::establish(stream, config))
+            .await
+            .map_err(|_| Error::Timeout("handshake"))?
+    }
+
+    async fn establish<S>(stream: S, config: Config) -> Result<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -115,6 +155,12 @@ impl Session {
                     bytes: config.rekey_after_bytes,
                     interval: config.rekey_interval,
                 },
+                config
+                    .keepalive
+                    .map(|(interval, max_missed)| mux::Keepalive {
+                        interval,
+                        max_missed,
+                    }),
             ),
             max_output: config.max_output,
             server_banner,

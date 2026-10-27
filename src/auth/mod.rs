@@ -11,6 +11,8 @@ const MSG_USERAUTH_REQUEST: u8 = 50;
 const MSG_USERAUTH_FAILURE: u8 = 51;
 const MSG_USERAUTH_SUCCESS: u8 = 52;
 const MSG_USERAUTH_BANNER: u8 = 53;
+/// Mehr Banner-Nachrichten als das nimmt kein vernünftiger Server vor der Antwort.
+const MAX_BANNERS: usize = 64;
 
 const SERVICE: &str = "ssh-connection";
 const METHOD: &str = "publickey";
@@ -39,11 +41,17 @@ where
     w.put_string(sig_blob.as_slice());
     t.send(w.as_slice()).await?;
 
+    let mut banners = 0usize;
     loop {
         let reply = t.recv().await?;
         match reply[0] {
             MSG_USERAUTH_SUCCESS => return Ok(()),
-            MSG_USERAUTH_BANNER => continue,
+            MSG_USERAUTH_BANNER => {
+                banners += 1;
+                if banners > MAX_BANNERS {
+                    return Err(Error::ProtocolViolation("too many authentication banners"));
+                }
+            }
             MSG_USERAUTH_FAILURE => {
                 let mut r = Reader::new(&reply[1..]);
                 let methods = r.get_name_list()?;

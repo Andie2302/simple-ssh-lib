@@ -6,7 +6,7 @@
 //! der nie über ein `await` gehalten wird.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::task::Waker;
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ use crate::wire::{Reader, Writer};
 
 pub(crate) const MSG_DISCONNECT: u8 = 1;
 const MSG_GLOBAL_REQUEST: u8 = 80;
+const MSG_REQUEST_SUCCESS: u8 = 81;
 const MSG_REQUEST_FAILURE: u8 = 82;
 pub(crate) const MSG_CHANNEL_OPEN: u8 = 90;
 const MSG_CHANNEL_OPEN_CONFIRMATION: u8 = 91;
@@ -96,6 +97,14 @@ pub(crate) struct RekeyLimits {
     pub interval: Duration,
 }
 
+/// Lebenszeichen-Prüfung: alle `interval` eine Anfrage; nach `max_missed` Intervallen
+/// ohne irgendein empfangenes Paket gilt die Verbindung als tot.
+#[derive(Clone, Copy)]
+pub(crate) struct Keepalive {
+    pub interval: Duration,
+    pub max_missed: u32,
+}
+
 /// So lange darf ein Schlüsselwechsel dauern, bevor die Verbindung als tot gilt.
 const REKEY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -108,6 +117,8 @@ pub(crate) struct Conn {
     traffic: AtomicU64,
     /// Abgeschlossene Schlüsselwechsel nach dem ersten Handshake.
     rekeys: AtomicU64,
+    /// Keepalive-Intervalle seit dem letzten empfangenen Paket.
+    missed: AtomicU32,
 }
 
 fn violation<T>(what: &'static str) -> Result<T> {
@@ -126,6 +137,7 @@ impl Conn {
             kex: Mutex::new(None),
             traffic: AtomicU64::new(0),
             rekeys: AtomicU64::new(0),
+            missed: AtomicU32::new(0),
         }
     }
 
@@ -192,6 +204,8 @@ impl Conn {
                     self.send(vec![MSG_REQUEST_FAILURE])?;
                 }
             }
+            // Antworten auf unsere Keepalive-Anfragen; wichtig ist nur, dass etwas ankommt.
+            MSG_REQUEST_SUCCESS | MSG_REQUEST_FAILURE => {}
             MSG_CHANNEL_OPEN => {
                 // Vom Server geöffnete Channels (Forwarding, X11) unterstützen wir nicht.
                 r.get_string()?;
@@ -355,6 +369,7 @@ impl Conn {
 pub(crate) struct Guard {
     conn: Arc<Conn>,
     reader: AbortHandle,
+    keepalive: Option<AbortHandle>,
 }
 
 impl Drop for Guard {
@@ -366,6 +381,9 @@ impl Drop for Guard {
             .put_string(b"");
         let _ = self.conn.enqueue(w.into_vec());
         self.reader.abort();
+        if let Some(keepalive) = &self.keepalive {
+            keepalive.abort();
+        }
     }
 }
 
@@ -394,6 +412,7 @@ pub(crate) fn spawn<R, W>(
     send: SendHalf<W>,
     context: RekeyContext,
     limits: RekeyLimits,
+    keepalive: Option<Keepalive>,
 ) -> Handle
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -409,9 +428,16 @@ where
         reader.clone(),
         limits,
     ));
+    let keepalive = keepalive.map(|k| {
+        tokio::spawn(keepalive_task(Arc::downgrade(&conn), reader.clone(), k)).abort_handle()
+    });
     Handle {
         conn: conn.clone(),
-        _guard: Arc::new(Guard { conn, reader }),
+        _guard: Arc::new(Guard {
+            conn,
+            reader,
+            keepalive,
+        }),
     }
 }
 
@@ -426,6 +452,7 @@ async fn reader_task<R: AsyncRead + Unpin>(
             Err(e) => break e,
         };
         conn.traffic.fetch_add(msg.len() as u64, Ordering::Relaxed);
+        conn.missed.store(0, Ordering::Relaxed);
         let handled = if msg[0] == kexinit::MSG_KEXINIT {
             rekey(&mut recv, &conn, &context, msg).await
         } else {
@@ -597,6 +624,31 @@ async fn writer_task<W: AsyncWrite + Unpin>(
         if let Err(e) = state.handle(&conn, item).await {
             conn.fail(e);
             reader.abort();
+            return;
+        }
+    }
+}
+
+async fn keepalive_task(conn: Weak<Conn>, reader: AbortHandle, keepalive: Keepalive) {
+    let mut ticker = tokio::time::interval(keepalive.interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await; // der erste Tick kommt sofort
+    loop {
+        ticker.tick().await;
+        let Some(conn) = conn.upgrade() else { return };
+        if conn.lock().lost.is_some() {
+            return;
+        }
+        if conn.missed.fetch_add(1, Ordering::Relaxed) >= keepalive.max_missed {
+            conn.fail(Error::ConnectionLost("keepalive timeout".into()));
+            reader.abort();
+            return;
+        }
+        let mut w = Writer::new();
+        w.put_u8(MSG_GLOBAL_REQUEST)
+            .put_string(b"keepalive@openssh.com")
+            .put_bool(true);
+        if conn.enqueue(w.into_vec()).is_err() {
             return;
         }
     }
