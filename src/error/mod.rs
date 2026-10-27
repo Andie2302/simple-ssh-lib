@@ -46,4 +46,24 @@ pub enum Error {
     /// Unerwartete oder verbotene Nachricht im Protokollablauf.
     #[error("protocol violation: {0}")]
     ProtocolViolation(&'static str),
+
+    /// Private Key hat ein Format oder einen Typ, den wir nicht unterstützen.
+    #[error("unsupported private key: {0}")]
+    UnsupportedKey(&'static str),
+
+    /// Der Private Key ist verschlüsselt, es wurde keine Passphrase angegeben.
+    #[error("private key is encrypted, passphrase required")]
+    PassphraseRequired,
+
+    /// Entschlüsselung des Private Keys schlug fehl.
+    #[error("wrong passphrase")]
+    WrongPassphrase,
+
+    /// Der Server hat den Public Key abgelehnt.
+    #[error("public key authentication failed")]
+    AuthFailed,
+
+    /// Der Server bietet keine Public-Key-Authentifizierung an.
+    #[error("server does not offer public key authentication")]
+    PublicKeyAuthUnavailable,
 }

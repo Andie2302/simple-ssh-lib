@@ -4,6 +4,7 @@
 |---|---|
 | `wire_and_packet` | Wire-Format und Paketformat ohne Netzwerk |
 | `handshake` | Handshake gegen einen echten SSH-Server |
+| `auth` | Public-Key-Anmeldung (auch mit Passphrase-Key) |
 
 ## Lokalen Test-sshd starten
 
@@ -20,6 +21,16 @@ In einem zweiten Terminal:
 
 ```sh
 cargo run --example handshake -- 127.0.0.1:2222 SHA256:<fingerprint von oben>
+```
+
+Für `auth` zusätzlich einen Benutzer-Key anlegen und eintragen:
+
+```sh
+ssh-keygen -q -t ed25519 -N 'meine passphrase' -f user_key
+cat user_key.pub >> /tmp/sshd-demo/authorized_keys
+# sshd mit -o AuthorizedKeysFile=/tmp/sshd-demo/authorized_keys -o StrictModes=no starten
+SSH_KEY_PASSPHRASE='meine passphrase' \
+  cargo run --example auth -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key
 ```
 
 Die Integrationstests (`cargo test`) starten ihren eigenen `sshd` automatisch

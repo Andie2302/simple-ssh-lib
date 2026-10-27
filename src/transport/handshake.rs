@@ -46,6 +46,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
 
         let host_key = HostKey::from_blob(reply.host_key_blob.to_vec());
         t.host_key_fingerprint = host_key.fingerprint();
+        t.session_id = h;
         if !host_key_check.accepts(&host_key) {
             return Err(Error::HostKeyRejected {
                 fingerprint: t.host_key_fingerprint.clone(),

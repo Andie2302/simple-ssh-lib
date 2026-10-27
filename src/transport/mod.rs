@@ -32,6 +32,7 @@ pub struct Transport<S> {
     recv_cipher: Option<ChaChaPoly>,
     server_banner: String,
     host_key_fingerprint: String,
+    session_id: [u8; 32],
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
@@ -44,6 +45,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
             recv_cipher: None,
             server_banner,
             host_key_fingerprint: String::new(),
+            session_id: [0; 32],
         }
     }
 
@@ -53,6 +55,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
 
     pub fn host_key_fingerprint(&self) -> &str {
         &self.host_key_fingerprint
+    }
+
+    /// Session-ID (erster Exchange-Hash); geht in die Signatur der Anmeldung ein.
+    pub fn session_id(&self) -> &[u8; 32] {
+        &self.session_id
     }
 
     pub fn is_encrypted(&self) -> bool {

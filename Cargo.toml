@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes = "0.9.3"
+bcrypt-pbkdf = "0.11.0"
 chacha20 = "0.10.2"
+ctr = "0.10.1"
 ed25519-dalek = "3.0.0"
 getrandom = "0.4.3"
 poly1305 = "0.9.1"
