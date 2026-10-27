@@ -49,7 +49,16 @@ pub fn encode_with_padding(payload: &[u8], pad_source: &[u8]) -> Result<Vec<u8>>
 
 /// Prüft `body` (alles nach dem Längenfeld) und gibt den Payload zurück.
 pub fn decode_body(body: &[u8]) -> Result<&[u8]> {
-    if body.len() < 1 + MIN_PADDING || !(4 + body.len()).is_multiple_of(BLOCK) {
+    if !(4 + body.len()).is_multiple_of(BLOCK) {
+        return Err(Error::InvalidPacket("bad packet length"));
+    }
+    unpad(body)
+}
+
+/// Entfernt `padding_length` und Padding, ohne die Ausrichtung zu prüfen
+/// (bei AEAD-Chiffren zählt das Längenfeld nicht zur Ausrichtung).
+pub fn unpad(body: &[u8]) -> Result<&[u8]> {
+    if body.len() < 1 + MIN_PADDING {
         return Err(Error::InvalidPacket("bad packet length"));
     }
     let pad_len = body[0] as usize;

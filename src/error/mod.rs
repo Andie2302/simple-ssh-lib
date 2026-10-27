@@ -22,4 +22,28 @@ pub enum Error {
     /// Paket verletzt RFC 4253 §6 (Länge, Padding, Alignment).
     #[error("invalid packet: {0}")]
     InvalidPacket(&'static str),
+
+    /// Der Server bietet einen unserer festen Algorithmen nicht an.
+    #[error("no common algorithm: {0}")]
+    NoCommonAlgorithm(&'static str),
+
+    /// Host-Key wurde von der `HostKeyCheck`-Richtlinie abgelehnt.
+    #[error("host key rejected (fingerprint {fingerprint})")]
+    HostKeyRejected { fingerprint: String },
+
+    /// Signatur des Servers über den Exchange-Hash ist ungültig.
+    #[error("invalid server signature")]
+    BadSignature,
+
+    /// Der Peer hat `SSH_MSG_DISCONNECT` geschickt.
+    #[error("disconnected by peer (code {code}): {message}")]
+    Disconnected { code: u32, message: String },
+
+    /// Authentifizierungs-Tag eines Pakets stimmt nicht.
+    #[error("packet authentication failed")]
+    MacFailure,
+
+    /// Unerwartete oder verbotene Nachricht im Protokollablauf.
+    #[error("protocol violation: {0}")]
+    ProtocolViolation(&'static str),
 }
