@@ -86,4 +86,28 @@ pub enum Error {
     /// Die Verbindung ist abgebrochen oder wurde beendet.
     #[error("connection lost: {0}")]
     ConnectionLost(String),
+
+    /// Der Server hat eine SFTP-Anfrage mit einem Fehlerstatus beantwortet.
+    #[error("sftp error {status:?}: {message}")]
+    Sftp {
+        status: crate::sftp::SftpStatus,
+        message: String,
+    },
+
+    /// SFTP steht auf dem Server nicht zur Verfügung (Subsystem fehlt oder falsche Version).
+    #[error("sftp unavailable: {0}")]
+    SftpUnavailable(String),
+}
+
+impl Error {
+    /// `true`, wenn der Server meldet, dass Datei oder Verzeichnis nicht existiert.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            Error::Sftp {
+                status: crate::sftp::SftpStatus::NoSuchFile,
+                ..
+            }
+        )
+    }
 }

@@ -327,6 +327,13 @@ pub(crate) struct Handle {
     _guard: Arc<Guard>,
 }
 
+impl Handle {
+    /// `true`, wenn die Verbindung abgebrochen ist.
+    pub fn is_lost(&self) -> bool {
+        self.conn.lock().lost.is_some()
+    }
+}
+
 /// Startet Lese- und Schreib-Task.
 pub(crate) fn spawn<R, W>(recv: RecvHalf<R>, send: SendHalf<W>) -> Handle
 where

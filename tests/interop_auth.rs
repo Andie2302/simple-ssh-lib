@@ -69,7 +69,10 @@ async fn unknown_user_is_rejected() {
 
 #[tokio::test]
 async fn server_without_publickey_auth() {
-    let sshd = sshd_or_skip!(Options { pubkey_auth: false });
+    let sshd = sshd_or_skip!(Options {
+        pubkey_auth: false,
+        ..Options::default()
+    });
     let key = PrivateKey::from_openssh(&sshd.key_plain, None).unwrap();
     let err = login(&sshd, &sshd.user, &key).await.unwrap_err();
     assert!(

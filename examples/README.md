@@ -7,6 +7,7 @@
 | `auth` | Public-Key-Anmeldung (auch mit Passphrase-Key) |
 | `exec` | Befehl ausführen, stdout/stderr/Exit-Code zurückgeben |
 | `shell` | Interaktive Shell mit PTY (stdin -> Shell -> stdout) |
+| `sftp` | Verzeichnis auflisten, Datei herunter- und hochladen |
 
 ## Lokalen Test-sshd starten
 
@@ -47,6 +48,16 @@ Und die Shell (Eingabe per Pipe, bei `exit` endet das Beispiel):
 printf 'echo $TERM; stty size\nexit\n' | \
   cargo run --example shell -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key
 ```
+
+SFTP braucht auf dem Test-`sshd` zusätzlich `-o 'Subsystem sftp /usr/lib/openssh/sftp-server'`:
+
+```sh
+cargo run --example sftp -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key ls /tmp
+cargo run --example sftp -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key put ./datei.bin /tmp/datei.bin
+cargo run --example sftp -- 127.0.0.1:2222 SHA256:<fingerprint> $(id -un) user_key get /tmp/datei.bin ./kopie.bin
+```
+
+Ohne `Subsystem`-Zeile meldet das Beispiel `sftp unavailable: ...`.
 
 Die Integrationstests (`cargo test`) starten ihren eigenen `sshd` automatisch
 und überspringen sich, wenn er nicht installiert ist.

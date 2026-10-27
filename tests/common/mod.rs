@@ -16,11 +16,16 @@ pub const KEY_PASSPHRASE: &str = "hunter2";
 #[derive(Clone, Copy)]
 pub struct Options {
     pub pubkey_auth: bool,
+    /// `Subsystem sftp` eintragen (setzt installierten `sftp-server` voraus).
+    pub sftp: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { pubkey_auth: true }
+        Self {
+            pubkey_auth: true,
+            sftp: true,
+        }
     }
 }
 
@@ -100,6 +105,18 @@ impl TestSshd {
         let authorized_path = dir.join("authorized_keys");
         std::fs::write(&authorized_path, authorized).ok()?;
 
+        let sftp_line = if opts.sftp {
+            let server = find(&[
+                "/usr/lib/openssh/sftp-server",
+                "/usr/libexec/openssh/sftp-server",
+                "/usr/lib/ssh/sftp-server",
+                "/usr/libexec/sftp-server",
+            ])?;
+            format!("Subsystem sftp {}\n", server.display())
+        } else {
+            String::new()
+        };
+
         let user = String::from_utf8(Command::new("id").arg("-un").output().ok()?.stdout)
             .ok()?
             .trim()
@@ -112,7 +129,7 @@ impl TestSshd {
                 "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nUsePAM no\n\
                  StrictModes no\nPermitRootLogin yes\nPasswordAuthentication no\n\
                  KbdInteractiveAuthentication no\nPubkeyAuthentication {}\n\
-                 AuthorizedKeysFile {}\nAllowUsers {user}\n",
+                 AuthorizedKeysFile {}\nAllowUsers {user}\n{sftp_line}",
                 host.display(),
                 dir.join("sshd.pid").display(),
                 if opts.pubkey_auth { "yes" } else { "no" },
@@ -158,6 +175,32 @@ impl Drop for TestSshd {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Eigenes Arbeitsverzeichnis für Tests, das beim Drop gelöscht wird.
+pub struct Scratch {
+    pub dir: PathBuf,
+}
+
+impl Scratch {
+    pub fn new(name: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("simple-ssh-lib-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        Self { dir }
+    }
+
+    /// Pfad innerhalb des Verzeichnisses als `String` (so wie ihn SFTP erwartet).
+    pub fn path(&self, name: &str) -> String {
+        self.dir.join(name).to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

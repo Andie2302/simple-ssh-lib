@@ -18,6 +18,7 @@ use crate::keys::PrivateKey;
 use crate::transport::{HostKeyCheck, Transport};
 
 pub use channel::ExitStatus;
+pub(crate) use channel::open_session;
 pub use exec::ExecOutput;
 pub use shell::{Pty, Shell};
 
@@ -29,7 +30,8 @@ pub struct Config {
     pub user: String,
     pub key: PrivateKey,
     pub host_key: HostKeyCheck,
-    /// Obergrenze für stdout + stderr eines `exec`; danach `Error::OutputTooLarge`.
+    /// Obergrenze für gesammelte Daten (stdout + stderr eines `exec`, `Sftp::read`);
+    /// danach `Error::OutputTooLarge`.
     pub max_output: usize,
 }
 
@@ -52,8 +54,8 @@ impl Config {
 /// Angemeldete SSH-Sitzung. Wird die letzte Kopie (Session, Shell) fallen
 /// gelassen, trennt die Verbindung mit `SSH_MSG_DISCONNECT`.
 pub struct Session {
-    handle: mux::Handle,
-    max_output: usize,
+    pub(crate) handle: mux::Handle,
+    pub(crate) max_output: usize,
     server_banner: String,
     host_key_fingerprint: String,
 }
