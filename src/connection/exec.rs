@@ -8,14 +8,19 @@ use super::mux::Event;
 use crate::error::{Error, Result};
 use crate::wire::check_field;
 
+/// Ergebnis eines [`Session::exec`](crate::Session::exec)-Aufrufs.
 #[derive(Debug, Clone)]
 pub struct ExecOutput {
+    /// Ausgabe auf stdout.
     pub stdout: Vec<u8>,
+    /// Ausgabe auf stderr.
     pub stderr: Vec<u8>,
+    /// Wie der Befehl endete.
     pub exit: ExitStatus,
 }
 
 impl ExecOutput {
+    /// `true`, wenn der Befehl mit Exit-Code 0 endete.
     pub fn success(&self) -> bool {
         self.exit == ExitStatus::Code(0)
     }

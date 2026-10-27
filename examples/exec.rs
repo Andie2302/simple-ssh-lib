@@ -37,6 +37,7 @@ async fn main() -> simple_ssh_lib::Result<()> {
             eprintln!("beendet durch Signal {name}");
             std::process::exit(128);
         }
-        ExitStatus::Unknown => std::process::exit(255),
+        // `Unknown` und spätere Varianten: kein Status bekannt
+        _ => std::process::exit(255),
     }
 }

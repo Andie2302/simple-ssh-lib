@@ -35,15 +35,18 @@ pub struct OpenOptions {
 }
 
 impl OpenOptions {
+    /// Alle Optionen aus; mindestens eine von `read`, `write`, `append` ist nötig.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Zum Lesen öffnen.
     pub fn read(&mut self, on: bool) -> &mut Self {
         self.read = on;
         self
     }
 
+    /// Zum Schreiben öffnen.
     pub fn write(&mut self, on: bool) -> &mut Self {
         self.write = on;
         self
@@ -55,11 +58,13 @@ impl OpenOptions {
         self
     }
 
+    /// Datei anlegen, falls sie fehlt (setzt Schreiben voraus).
     pub fn create(&mut self, on: bool) -> &mut Self {
         self.create = on;
         self
     }
 
+    /// Vorhandenen Inhalt beim Öffnen löschen (setzt Schreiben voraus).
     pub fn truncate(&mut self, on: bool) -> &mut Self {
         self.truncate = on;
         self
@@ -109,6 +114,7 @@ impl OpenOptions {
         Ok(flags)
     }
 
+    /// Öffnet `path` mit diesen Optionen.
     pub async fn open(&self, sftp: &Sftp, path: &str) -> Result<File> {
         crate::wire::check_field(path, "path")?;
         let flags = self.pflags()?;
@@ -324,6 +330,7 @@ impl File {
         self.pos
     }
 
+    /// Attribute der offenen Datei (`fstat`).
     pub async fn metadata(&self) -> Result<Metadata> {
         let response = self
             .client
@@ -360,6 +367,14 @@ impl File {
             })
             .await?;
         expect_ok(response)
+    }
+}
+
+impl std::fmt::Debug for File {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("File")
+            .field("position", &self.pos)
+            .finish_non_exhaustive()
     }
 }
 

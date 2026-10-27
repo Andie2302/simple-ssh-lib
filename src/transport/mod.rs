@@ -1,13 +1,19 @@
 //! Transport-Schicht (RFC 4253): Version-Austausch, Schlüsselaustausch,
 //! verschlüsseltes Paketformat.
 
+#[doc(hidden)]
 pub mod cipher;
 mod handshake;
 pub mod hostkey;
+#[doc(hidden)]
 pub mod kex;
+#[doc(hidden)]
 pub mod kexinit;
+#[doc(hidden)]
 pub mod packet;
+#[doc(hidden)]
 pub mod rekey;
+#[doc(hidden)]
 pub mod version;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -17,11 +23,17 @@ use crate::wire::Reader;
 use cipher::{ChaChaPoly, TAG_LEN};
 pub use hostkey::{HostKey, HostKeyCheck};
 
+/// `SSH_MSG_DISCONNECT`.
 pub const MSG_DISCONNECT: u8 = 1;
+/// `SSH_MSG_IGNORE`.
 pub const MSG_IGNORE: u8 = 2;
+/// `SSH_MSG_DEBUG`.
 pub const MSG_DEBUG: u8 = 4;
+/// `SSH_MSG_SERVICE_REQUEST`.
 pub const MSG_SERVICE_REQUEST: u8 = 5;
+/// `SSH_MSG_SERVICE_ACCEPT`.
 pub const MSG_SERVICE_ACCEPT: u8 = 6;
+/// `SSH_MSG_NEWKEYS`.
 pub const MSG_NEWKEYS: u8 = 21;
 
 /// Zustand einer Senderichtung: Sequenznummer und (nach NEWKEYS) Chiffre.
@@ -119,6 +131,7 @@ pub struct RecvHalf<R> {
 }
 
 impl<W: AsyncWrite + Unpin> SendHalf<W> {
+    /// Sendet einen Payload; das erste Byte ist der Nachrichtentyp.
     pub async fn send(&mut self, payload: &[u8]) -> Result<()> {
         self.state.send(&mut self.stream, payload).await
     }
@@ -157,10 +170,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
         }
     }
 
+    /// Versionszeile des Servers.
     pub fn server_banner(&self) -> &str {
         &self.server_banner
     }
 
+    /// Fingerprint (`SHA256:...`) des Host-Keys.
     pub fn host_key_fingerprint(&self) -> &str {
         &self.host_key_fingerprint
     }
@@ -170,6 +185,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Transport<S> {
         &self.session_id
     }
 
+    /// `true`, sobald beide Richtungen verschlüsselt sind.
     pub fn is_encrypted(&self) -> bool {
         self.send.cipher.is_some() && self.recv.cipher.is_some()
     }

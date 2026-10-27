@@ -18,7 +18,9 @@ use crate::wire::Writer;
 
 /// Wie ein Befehl oder eine Shell beendet wurde.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExitStatus {
+    /// Normales Ende mit diesem Exit-Code.
     Code(u32),
     /// Durch ein Signal beendet (Name ohne `SIG`, z.B. `KILL`).
     Signal(String),

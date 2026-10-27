@@ -1,9 +1,13 @@
 use std::io;
 
+/// Ergebnis mit dem Fehlertyp der Bibliothek.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Alle Fehler der Bibliothek. Neue Varianten können hinzukommen.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
+    /// Fehler des Betriebssystems oder des Netzwerks.
     #[error("i/o error: {0}")]
     Io(#[from] io::Error),
 
@@ -29,7 +33,10 @@ pub enum Error {
 
     /// Host-Key wurde von der `HostKeyCheck`-Richtlinie abgelehnt.
     #[error("host key rejected (fingerprint {fingerprint})")]
-    HostKeyRejected { fingerprint: String },
+    HostKeyRejected {
+        /// Fingerprint (`SHA256:...`) des abgelehnten Keys.
+        fingerprint: String,
+    },
 
     /// Signatur des Servers über den Exchange-Hash ist ungültig.
     #[error("invalid server signature")]
@@ -37,7 +44,12 @@ pub enum Error {
 
     /// Der Peer hat `SSH_MSG_DISCONNECT` geschickt.
     #[error("disconnected by peer (code {code}): {message}")]
-    Disconnected { code: u32, message: String },
+    Disconnected {
+        /// Grund-Code laut RFC 4253 §11.1.
+        code: u32,
+        /// Beschreibung des Servers.
+        message: String,
+    },
 
     /// Authentifizierungs-Tag eines Pakets stimmt nicht.
     #[error("packet authentication failed")]
@@ -69,7 +81,12 @@ pub enum Error {
 
     /// Der Server hat das Öffnen eines Channels abgelehnt.
     #[error("channel open failed (reason {reason}): {message}")]
-    ChannelOpenFailed { reason: u32, message: String },
+    ChannelOpenFailed {
+        /// Grund-Code laut RFC 4254 §5.1.
+        reason: u32,
+        /// Beschreibung des Servers.
+        message: String,
+    },
 
     /// Der Server hat den Befehl (`exec`-Request) abgelehnt.
     #[error("server rejected the command")]
@@ -90,7 +107,9 @@ pub enum Error {
     /// Der Server hat eine SFTP-Anfrage mit einem Fehlerstatus beantwortet.
     #[error("sftp error {status:?}: {message}")]
     Sftp {
+        /// Statuscode des Servers.
         status: crate::sftp::SftpStatus,
+        /// Meldung des Servers.
         message: String,
     },
 

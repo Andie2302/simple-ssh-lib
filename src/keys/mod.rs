@@ -121,6 +121,7 @@ impl PrivateKey {
         HostKey::from_blob(self.public_blob()).fingerprint()
     }
 
+    /// Kommentar aus der Schlüsseldatei (meist `benutzer@rechner`).
     pub fn comment(&self) -> &str {
         &self.comment
     }

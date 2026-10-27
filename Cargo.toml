@@ -2,6 +2,13 @@
 name = "simple-ssh-lib"
 version = "0.1.0"
 edition = "2024"
+description = "Kleine asynchrone SSH-Client-Bibliothek mit festem Algorithmensatz: exec, Shell mit PTY und SFTP"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Andie2302/simple-ssh-lib"
+readme = "README.md"
+keywords = ["ssh", "sftp", "async", "tokio", "client"]
+categories = ["network-programming", "asynchronous"]
+exclude = ["/fuzz", "/.github"]
 
 [dependencies]
 aes = "0.9.3"

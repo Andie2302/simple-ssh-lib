@@ -9,10 +9,12 @@ pub struct HostKey {
 }
 
 impl HostKey {
+    /// Aus dem Wire-Format (`string "ssh-ed25519" | string key`).
     pub fn from_blob(blob: Vec<u8>) -> Self {
         Self { blob }
     }
 
+    /// Der Key im Wire-Format.
     pub fn blob(&self) -> &[u8] {
         &self.blob
     }
@@ -31,7 +33,17 @@ pub enum HostKeyCheck {
     Callback(Box<dyn Fn(&HostKey) -> bool + Send + Sync>),
 }
 
+impl std::fmt::Debug for HostKeyCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fingerprint(fp) => f.debug_tuple("Fingerprint").field(fp).finish(),
+            Self::Callback(_) => f.write_str("Callback(..)"),
+        }
+    }
+}
+
 impl HostKeyCheck {
+    /// `true`, wenn die Richtlinie diesen Host-Key zulässt.
     pub fn accepts(&self, key: &HostKey) -> bool {
         match self {
             Self::Fingerprint(expected) => *expected == key.fingerprint(),

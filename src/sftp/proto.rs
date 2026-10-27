@@ -53,16 +53,27 @@ const S_IFLNK: u32 = 0o120000;
 
 /// Statuscode einer `SSH_FXP_STATUS`-Antwort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SftpStatus {
+    /// Erfolg.
     Ok,
+    /// Dateiende oder Ende der Verzeichnisliste.
     Eof,
+    /// Datei oder Verzeichnis existiert nicht.
     NoSuchFile,
+    /// Keine Berechtigung.
     PermissionDenied,
+    /// Allgemeiner Fehler (z.B. Verzeichnis nicht leer oder Ziel existiert schon).
     Failure,
+    /// Der Server hat die Anfrage nicht verstanden.
     BadMessage,
+    /// Keine Verbindung zum Dateisystem des Servers.
     NoConnection,
+    /// Verbindung des Servers zu seinem Dateisystem verloren.
     ConnectionLost,
+    /// Operation wird vom Server nicht unterstützt.
     OpUnsupported,
+    /// Anderer Statuscode.
     Other(u32),
 }
 
@@ -86,13 +97,17 @@ impl From<u32> for SftpStatus {
 /// Datei-Attribute. Felder, die der Server nicht meldet, sind `None`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Metadata {
+    /// Größe in Bytes.
     pub size: Option<u64>,
+    /// Benutzer-ID des Besitzers.
     pub uid: Option<u32>,
+    /// Gruppen-ID des Besitzers.
     pub gid: Option<u32>,
     /// Unix-Modus inkl. Dateityp-Bits.
     pub permissions: Option<u32>,
     /// Sekunden seit 1970.
     pub atime: Option<u32>,
+    /// Zeit der letzten Änderung (Sekunden seit 1970).
     pub mtime: Option<u32>,
 }
 
@@ -101,14 +116,17 @@ impl Metadata {
         self.permissions.map(|p| p & S_IFMT)
     }
 
+    /// `true` für Verzeichnisse (laut Modus-Bits).
     pub fn is_dir(&self) -> bool {
         self.file_type_bits() == Some(S_IFDIR)
     }
 
+    /// `true` für normale Dateien.
     pub fn is_file(&self) -> bool {
         self.file_type_bits() == Some(S_IFREG)
     }
 
+    /// `true` für symbolische Links (nur bei `symlink_metadata` sichtbar).
     pub fn is_symlink(&self) -> bool {
         self.file_type_bits() == Some(S_IFLNK)
     }
@@ -184,6 +202,7 @@ impl Metadata {
 pub struct DirEntry {
     /// Dateiname (nicht-UTF-8-Bytes werden ersetzt).
     pub name: String,
+    /// Attribute des Eintrags.
     pub metadata: Metadata,
 }
 

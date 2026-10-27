@@ -17,11 +17,14 @@ use crate::wire::check_field;
 pub struct Pty {
     /// Wert für `$TERM`.
     pub term: String,
+    /// Spalten.
     pub cols: u32,
+    /// Zeilen.
     pub rows: u32,
 }
 
 impl Pty {
+    /// Terminal vom Typ `xterm-256color` in der angegebenen Größe.
     pub fn new(cols: u32, rows: u32) -> Self {
         Self {
             term: "xterm-256color".into(),
@@ -42,6 +45,14 @@ impl Default for Pty {
 /// Wird die Shell fallen gelassen, wird der Channel geschlossen.
 pub struct Shell {
     channel: Channel,
+}
+
+impl std::fmt::Debug for Shell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shell")
+            .field("exit_status", &self.exit_status())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Session {

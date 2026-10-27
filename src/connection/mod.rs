@@ -37,9 +37,13 @@ pub const DEFAULT_REKEY_INTERVAL: Duration = Duration::from_secs(3600);
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Verbindungsparameter. Host-Key-Prüfung und Key sind Pflicht.
+#[non_exhaustive]
 pub struct Config {
+    /// Benutzername auf dem Server.
     pub user: String,
+    /// Privater Schlüssel für die Public-Key-Anmeldung.
     pub key: PrivateKey,
+    /// Wie der Host-Key des Servers geprüft wird (Pflicht, es gibt keinen Standard).
     pub host_key: HostKeyCheck,
     /// Obergrenze für gesammelte Daten (stdout + stderr eines `exec`, `Sftp::read`);
     /// danach `Error::OutputTooLarge`.
@@ -55,6 +59,7 @@ pub struct Config {
 }
 
 impl Config {
+    /// Neue Konfiguration; Fristen und Grenzen haben sinnvolle Standardwerte.
     pub fn new(user: impl Into<String>, key: PrivateKey, host_key: HostKeyCheck) -> Self {
         Self {
             user: user.into(),
@@ -68,6 +73,7 @@ impl Config {
         }
     }
 
+    /// Setzt die Obergrenze für gesammelte Daten (siehe das Feld `max_output`).
     pub fn max_output(mut self, bytes: usize) -> Self {
         self.max_output = bytes;
         self
@@ -98,6 +104,30 @@ impl Config {
     pub fn keepalive(mut self, interval: Duration, max_missed: u32) -> Self {
         self.keepalive = Some((interval, max_missed));
         self
+    }
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("user", &self.user)
+            .field("key", &self.key)
+            .field("host_key", &self.host_key)
+            .field("max_output", &self.max_output)
+            .field("rekey_after_bytes", &self.rekey_after_bytes)
+            .field("rekey_interval", &self.rekey_interval)
+            .field("timeout", &self.timeout)
+            .field("keepalive", &self.keepalive)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("server_banner", &self.server_banner)
+            .field("host_key_fingerprint", &self.host_key_fingerprint)
+            .finish_non_exhaustive()
     }
 }
 
@@ -174,10 +204,12 @@ impl Session {
         self.handle.rekey_count()
     }
 
+    /// Versionszeile des Servers, z.B. `SSH-2.0-OpenSSH_9.6`.
     pub fn server_banner(&self) -> &str {
         &self.server_banner
     }
 
+    /// Fingerprint (`SHA256:...`) des Host-Keys dieser Verbindung.
     pub fn host_key_fingerprint(&self) -> &str {
         &self.host_key_fingerprint
     }

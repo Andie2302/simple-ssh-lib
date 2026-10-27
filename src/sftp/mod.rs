@@ -76,6 +76,14 @@ pub struct Sftp {
     max_read: usize,
 }
 
+impl std::fmt::Debug for Sftp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sftp")
+            .field("max_read", &self.max_read)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Session {
     /// Startet das `sftp`-Subsystem. Die Obergrenze für [`Sftp::read`] ist
     /// `Config::max_output`.
@@ -258,6 +266,7 @@ impl Sftp {
         )
     }
 
+    /// Löscht ein leeres Verzeichnis.
     pub async fn remove_dir(&self, path: &str) -> Result<()> {
         check_field(path, "path")?;
         expect_ok(
@@ -269,6 +278,7 @@ impl Sftp {
         )
     }
 
+    /// Löscht eine Datei.
     pub async fn remove_file(&self, path: &str) -> Result<()> {
         check_field(path, "path")?;
         expect_ok(
