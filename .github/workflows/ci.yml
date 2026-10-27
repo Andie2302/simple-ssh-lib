@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust stable installieren
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # sshd und sftp-server für die Interop-Tests. Ohne sie würden diese Tests
+      # sich selbst überspringen, die CI wäre dann grün, ohne sie zu prüfen.
+      - name: OpenSSH-Server installieren
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          test -x /usr/sbin/sshd
+          test -x /usr/lib/openssh/sftp-server
+
+      - name: Format prüfen
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      - name: Robustheitstests mit vielen Durchläufen
+        run: cargo test --test robustness
+        env:
+          FUZZ_ITERS: "200000"
+
+      - name: Dokumentation
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Fuzz-Ziele kompilieren (laufen lassen geht nur mit nightly)
+        run: cargo check --manifest-path fuzz/Cargo.toml
