@@ -3,6 +3,8 @@
 use std::collections::VecDeque;
 use std::io::{self, SeekFrom};
 
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
 use super::client::{Client, Pending};
 use super::proto::{
     FXP_CLOSE, FXP_FSETSTAT, FXP_FSTAT, FXP_OPEN, FXP_READ, FXP_WRITE, Metadata, PFLAG_APPEND,
@@ -268,6 +270,115 @@ impl File {
             }
         }
         Ok(out)
+    }
+
+    /// Liest ab `start` bis zum Dateiende und schreibt alles nach `writer`, ohne die Datei im
+    /// Speicher zu halten (höchstens 16 × 32 KiB in Flug). Gepipelinet wie [`Sftp::read`].
+    /// `progress` bekommt nach jedem Block die Gesamtzahl der übertragenen Bytes. Liefert diese
+    /// Zahl am Ende.
+    pub async fn copy_to<W, F>(&self, start: u64, writer: &mut W, mut progress: F) -> Result<u64>
+    where
+        W: AsyncWrite + Unpin,
+        F: FnMut(u64),
+    {
+        struct Request {
+            offset: u64,
+            pending: Pending,
+        }
+
+        let mut queue: VecDeque<Request> = VecDeque::new();
+        let mut next = start;
+        let mut total = 0u64;
+        loop {
+            while queue.len() < DEPTH {
+                let pending = self.client.start(FXP_READ, |w| {
+                    w.put_string(&self.handle)
+                        .put_u64(next)
+                        .put_u32(CHUNK as u32);
+                })?;
+                queue.push_back(Request {
+                    offset: next,
+                    pending,
+                });
+                next += CHUNK as u64;
+            }
+            let Some(request) = queue.pop_front() else {
+                break;
+            };
+            match request.pending.wait().await? {
+                Response::Data(d) => {
+                    if d.is_empty() || d.len() > CHUNK {
+                        return Err(Error::ProtocolViolation(
+                            "sftp read returned invalid data length",
+                        ));
+                    }
+                    writer.write_all(&d).await?;
+                    total += d.len() as u64;
+                    progress(total);
+                    if d.len() < CHUNK {
+                        // Kurze Antwort: später angefragte Blöcke wären lückenhaft, also
+                        // verwerfen und ab dem echten Stand neu starten.
+                        queue.clear();
+                        next = request.offset + d.len() as u64;
+                    }
+                }
+                Response::Status {
+                    status: SftpStatus::Eof,
+                    ..
+                } => break,
+                Response::Status { status, message } => return Err(status_error(status, message)),
+                _ => return unexpected(),
+            }
+        }
+        writer.flush().await?;
+        Ok(total)
+    }
+
+    /// Liest `reader` bis zum Ende und schreibt es ab `start` in die Datei, ohne alles im
+    /// Speicher zu halten (höchstens 16 × 32 KiB in Flug). `progress` bekommt nach jeder
+    /// bestätigten Anfrage die Gesamtzahl der geschriebenen Bytes. Liefert diese Zahl am Ende.
+    pub async fn copy_from<R, F>(&self, start: u64, reader: &mut R, mut progress: F) -> Result<u64>
+    where
+        R: AsyncRead + Unpin,
+        F: FnMut(u64),
+    {
+        let mut queue: VecDeque<(Pending, u64)> = VecDeque::new();
+        let mut offset = start;
+        let mut total = 0u64;
+        let mut done = false;
+        loop {
+            while !done && queue.len() < DEPTH {
+                let mut buf = vec![0u8; CHUNK];
+                let mut filled = 0;
+                while filled < CHUNK {
+                    let n = reader.read(&mut buf[filled..]).await?;
+                    if n == 0 {
+                        done = true;
+                        break;
+                    }
+                    filled += n;
+                }
+                if filled == 0 {
+                    break;
+                }
+                let at = offset;
+                let chunk = &buf[..filled];
+                queue.push_back((
+                    self.client.start(FXP_WRITE, |w| {
+                        w.put_string(&self.handle).put_u64(at).put_string(chunk);
+                    })?,
+                    filled as u64,
+                ));
+                offset += filled as u64;
+            }
+            let Some((pending, len)) = queue.pop_front() else {
+                return Ok(total);
+            };
+            // Bei einem Fehler werden die übrigen Antworten verworfen.
+            expect_ok(pending.wait().await?)?;
+            total += len;
+            progress(total);
+        }
     }
 
     /// Schreibt höchstens 32 KiB ab der aktuellen Position und liefert die Anzahl.

@@ -401,3 +401,68 @@ async fn connection_loss_surfaces_as_error() {
         .expect("sftp hung");
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn streaming_copy_roundtrip_reports_progress() {
+    let sshd = sshd_or_skip!();
+    let scratch = Scratch::new("sftp-copy");
+    let (_s, sftp) = start(&sshd).await;
+    let data = pattern(5 * 1024 * 1024 + 123);
+    let path = scratch.path("stream.bin");
+
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&sftp, &path)
+        .await
+        .unwrap();
+    let mut reader = &data[..];
+    let mut last = 0;
+    let mut calls = 0;
+    let n = file
+        .copy_from(0, &mut reader, |t| {
+            assert!(t > last);
+            last = t;
+            calls += 1;
+        })
+        .await
+        .unwrap();
+    file.close().await.unwrap();
+    assert_eq!(n, data.len() as u64);
+    assert_eq!(last, n);
+    assert!(calls > 100);
+    assert_eq!(std::fs::read(&path).unwrap(), data);
+
+    let file = sftp.open(&path).await.unwrap();
+    let mut out = Vec::new();
+    let n = file.copy_to(0, &mut out, |_| {}).await.unwrap();
+    assert_eq!(n, data.len() as u64);
+    assert_eq!(out, data);
+
+    // Ab einem Offset (Fortsetzen) und leere Datei.
+    let mut tail = Vec::new();
+    file.copy_to(1_000_000, &mut tail, |_| {}).await.unwrap();
+    assert_eq!(tail, data[1_000_000..]);
+    let empty = scratch.path("empty");
+    sftp.write(&empty, b"").await.unwrap();
+    let f = sftp.open(&empty).await.unwrap();
+    let mut out = Vec::new();
+    assert_eq!(f.copy_to(0, &mut out, |_| {}).await.unwrap(), 0);
+    assert!(out.is_empty());
+}
+
+#[tokio::test]
+async fn streaming_copy_errors_are_reported() {
+    let sshd = sshd_or_skip!();
+    let scratch = Scratch::new("sftp-copy-err");
+    let (_s, sftp) = start(&sshd).await;
+    // Schreiben in eine nur lesbar geöffnete Datei schlägt fehl.
+    let path = scratch.path("ro.bin");
+    sftp.write(&path, b"abc").await.unwrap();
+    let file = sftp.open(&path).await.unwrap();
+    let data = vec![1u8; 100_000];
+    let mut reader = &data[..];
+    let err = file.copy_from(0, &mut reader, |_| {}).await.unwrap_err();
+    assert!(matches!(err, Error::Sftp { .. }), "{err:?}");
+}

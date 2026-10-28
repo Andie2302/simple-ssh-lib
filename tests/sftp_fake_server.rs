@@ -550,3 +550,24 @@ async fn invalid_open_options_are_rejected_locally() {
         );
     }
 }
+
+#[tokio::test]
+async fn short_reads_still_produce_the_complete_file_when_streaming() {
+    let data = pattern(300_000);
+    let (sftp, _, _) = connect(
+        &[("f", data.clone())],
+        Behavior {
+            short_reads: true,
+            ..Behavior::default()
+        },
+    )
+    .await;
+    let file = sftp.open("f").await.unwrap();
+    let mut out = Vec::new();
+    let n = tokio::time::timeout(Duration::from_secs(20), file.copy_to(0, &mut out, |_| {}))
+        .await
+        .expect("hung")
+        .unwrap();
+    assert_eq!(n as usize, data.len());
+    assert!(out == data, "content differs");
+}
