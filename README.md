@@ -15,7 +15,7 @@ klare Fehler statt Fallbacks.
 |---|---|
 | Befehl ausführen (stdout, stderr, Exit-Code, optional stdin) | `session.exec(..)`, `session.exec_with_input(..)` |
 | Befehl als Strom: Ausgabe und Eingabe live, Rückstau, Exit-Status am Ende | `session.exec_stream(..)` |
-| Interaktive Shell mit PTY (`AsyncRead + AsyncWrite`, Größenänderung) | `session.shell(Pty::new(80, 24))` |
+| Interaktive Shell mit PTY (`AsyncRead + AsyncWrite`, Größenänderung, teilbar in Lese-/Schreibseite + Steuerung) | `session.shell(Pty::new(80, 24))`, `shell.split()` |
 | SFTP v3: lesen, schreiben, auflisten, Attribute, anlegen, löschen, umbenennen | `session.sftp()` |
 | Parallele Befehle, Shells und SFTP auf **einer** Verbindung | alle Methoden nehmen `&self` |
 | Schlüsselwechsel nach Datenmenge oder Zeit, auch vom Server ausgelöst | automatisch |

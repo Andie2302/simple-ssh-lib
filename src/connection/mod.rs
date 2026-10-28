@@ -25,7 +25,7 @@ pub(crate) use channel::open_session;
 pub use exec::ExecOutput;
 pub use exec_stream::{ExecEvent, ExecEvents, ExecStdin, ExecStream};
 pub(crate) use mux::fuzz_dispatch;
-pub use shell::{Pty, Shell};
+pub use shell::{Pty, Shell, ShellControl, ShellReader, ShellWriter};
 
 /// Standardgrenze für die gesammelte Ausgabe eines Befehls (stdout + stderr).
 pub const DEFAULT_MAX_OUTPUT: usize = 64 * 1024 * 1024;

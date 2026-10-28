@@ -98,7 +98,7 @@ pub mod wire;
 
 pub use connection::{
     Config, ExecEvent, ExecEvents, ExecOutput, ExecStdin, ExecStream, ExitStatus, Pty, Session,
-    Shell,
+    Shell, ShellControl, ShellReader, ShellWriter,
 };
 pub use error::{Error, Result};
 pub use keys::PrivateKey;

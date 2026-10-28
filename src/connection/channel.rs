@@ -48,6 +48,11 @@ impl ChannelCore {
         self.exit.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Gemeinsamer Status-Zähler, der auch nach dem Schließen des Channels lesbar bleibt.
+    pub fn exit_handle(&self) -> Arc<Mutex<ExitStatus>> {
+        self.exit.clone()
+    }
+
     /// Sendet CHANNEL_CLOSE, falls das noch nicht geschehen ist.
     pub fn close(&self) {
         let remote = {
