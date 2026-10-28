@@ -22,6 +22,8 @@ const SERVER_BANNER: &str = "SSH-2.0-fake_1.0";
 struct Opts {
     omit_strict: bool,
     corrupt_signature: bool,
+    /// Länge eines IGNORE-Pakets, das der Server vor SERVICE_ACCEPT schickt (0 = keins).
+    ignore_len: usize,
 }
 
 fn host_signing_key() -> SigningKey {
@@ -110,7 +112,16 @@ async fn fake_server(mut s: DuplexStream, opts: Opts) -> Result<(), Error> {
     accept
         .put_u8(MSG_SERVICE_ACCEPT)
         .put_string(b"ssh-userauth");
-    s.write_all(&send.seal(0, accept.as_slice())?).await?;
+    let mut seq = 0;
+    if opts.ignore_len > 0 {
+        // OpenSSH schickt solche Pakete als Tarnverkehr; sie sind größer als 35000 Bytes möglich.
+        let mut ignore = vec![2u8];
+        ignore.extend(std::iter::repeat_n(0u8, opts.ignore_len));
+        s.write_all(&send.seal_with_limit(seq, &ignore, 1 << 20)?)
+            .await?;
+        seq += 1;
+    }
+    s.write_all(&send.seal(seq, accept.as_slice())?).await?;
     s.flush().await?;
     Ok(())
 }
@@ -188,4 +199,32 @@ async fn server_without_strict_kex_is_rejected() {
         .err()
         .unwrap();
     assert!(matches!(err, Error::NoCommonAlgorithm("strict kex")));
+}
+
+#[tokio::test]
+async fn large_ignore_packets_from_the_server_are_accepted() {
+    // OpenSSH schickt IGNORE-Pakete weit über 35000 Bytes.
+    let opts = Opts {
+        ignore_len: 100_000,
+        ..Opts::default()
+    };
+    run(opts, HostKeyCheck::Fingerprint(host_fingerprint()))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn absurdly_large_packets_are_rejected() {
+    let opts = Opts {
+        ignore_len: 300_000,
+        ..Opts::default()
+    };
+    let err = match run(opts, HostKeyCheck::Fingerprint(host_fingerprint())).await {
+        Ok(_) => panic!("Paket hätte abgelehnt werden müssen"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, Error::InvalidPacket("packet too large")),
+        "{err:?}"
+    );
 }

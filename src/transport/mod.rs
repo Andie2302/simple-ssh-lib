@@ -73,7 +73,7 @@ impl RecvState {
                 let mut enc_len = [0u8; 4];
                 r.read_exact(&mut enc_len).await?;
                 let len = c.decrypt_len(self.seq, &enc_len) as usize;
-                if len > packet::MAX_PACKET_LEN {
+                if len > packet::MAX_RECV_PACKET_LEN {
                     return Err(Error::InvalidPacket("packet too large"));
                 }
                 let mut enc_body = vec![0u8; len];

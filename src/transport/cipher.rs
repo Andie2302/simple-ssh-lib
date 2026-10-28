@@ -51,12 +51,18 @@ impl ChaChaPoly {
 
     /// Verschlüsselt `payload` zu einem vollständigen Paket (inkl. Tag).
     pub fn seal(&self, seq: u32, payload: &[u8]) -> Result<Vec<u8>> {
+        self.seal_with_limit(seq, payload, MAX_PACKET_LEN)
+    }
+
+    /// Wie [`seal`](Self::seal) mit anderer Größengrenze (nur für Tests mit großen Servern).
+    #[doc(hidden)]
+    pub fn seal_with_limit(&self, seq: u32, payload: &[u8], limit: usize) -> Result<Vec<u8>> {
         let mut pad_len = BLOCK - (1 + payload.len()) % BLOCK;
         if pad_len < MIN_PADDING {
             pad_len += BLOCK;
         }
         let packet_length = 1 + payload.len() + pad_len;
-        if packet_length > MAX_PACKET_LEN {
+        if packet_length > limit {
             return Err(Error::InvalidPacket("packet too large"));
         }
 

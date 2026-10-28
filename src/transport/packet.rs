@@ -16,6 +16,10 @@ const BLOCK: usize = 8;
 const MIN_PADDING: usize = 4;
 /// RFC 4253 §6.1: Implementierungen müssen mindestens 35000 Bytes Paket verarbeiten.
 pub const MAX_PACKET_LEN: usize = 35_000;
+/// Obergrenze für empfangene Pakete nach dem Handshake. OpenSSH erlaubt bis zu 256 KiB und
+/// schickt tatsächlich größere IGNORE-Pakete (Tarnverkehr gegen Tastendruck-Analyse). Selbst
+/// gesendete Pakete bleiben bei [`MAX_PACKET_LEN`].
+pub const MAX_RECV_PACKET_LEN: usize = 256 * 1024;
 
 /// Kodiert `payload` mit zufälligem Padding.
 pub fn encode(payload: &[u8]) -> Result<Vec<u8>> {
