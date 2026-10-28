@@ -6,6 +6,7 @@
 
 mod channel;
 mod exec;
+mod exec_stream;
 mod mux;
 mod shell;
 
@@ -22,6 +23,7 @@ use crate::transport::{HostKeyCheck, Transport};
 pub use channel::ExitStatus;
 pub(crate) use channel::open_session;
 pub use exec::ExecOutput;
+pub use exec_stream::{ExecEvent, ExecEvents, ExecStdin, ExecStream};
 pub(crate) use mux::fuzz_dispatch;
 pub use shell::{Pty, Shell};
 

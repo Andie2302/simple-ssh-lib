@@ -3,7 +3,8 @@
 //!
 //! # Funktionsumfang
 //!
-//! * Befehle ausführen ([`Session::exec`], [`Session::exec_with_input`])
+//! * Befehle ausführen ([`Session::exec`], [`Session::exec_with_input`]), auch als Strom
+//!   mit Live-Ausgabe und Live-Eingabe ([`Session::exec_stream`])
 //! * Interaktive Shell mit Pseudo-Terminal ([`Session::shell`], [`Shell`])
 //! * SFTP Version 3 ([`Session::sftp`], [`Sftp`])
 //! * Schlüsselwechsel (Rekeying), Fristen und Keepalive
@@ -95,7 +96,10 @@ pub mod transport;
 #[doc(hidden)]
 pub mod wire;
 
-pub use connection::{Config, ExecOutput, ExitStatus, Pty, Session, Shell};
+pub use connection::{
+    Config, ExecEvent, ExecEvents, ExecOutput, ExecStdin, ExecStream, ExitStatus, Pty, Session,
+    Shell,
+};
 pub use error::{Error, Result};
 pub use keys::PrivateKey;
 pub use sftp::Sftp;
